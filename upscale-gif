@@ -307,6 +307,13 @@ done
 shift $((OPTIND - 1))
 input=${1:-}
 
+# The output name's extension picks the format when -f isn't given
+out_ext=${output##*.}; out_ext=${out_ext,,}
+if [[ -n $output && $out_ext =~ ^(gif|mp4|webm|avif)$ ]]; then
+    [[ -z $format || $format == "$out_ext" ]] || die "output name ends in .$out_ext but the format is $format"
+    format=$out_ext
+fi
+
 for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not installed"; done
 [[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
 [[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
@@ -323,6 +330,8 @@ if [[ -z $input ]]; then
     input=$(pick_file) || exit 0
 fi
 [[ -f $input ]] || die "file not found: $input"
+# Absolute path, so a name starting with "-" isn't taken for an option
+input=$(realpath -- "$input")
 
 # --- Probe -------------------------------------------------------------------------
 # Use the video stream with the most frames: AVIF files also carry a still image (and
@@ -341,8 +350,23 @@ if [[ $brand == avi[fs] ]] && (( best > 0 )); then
         | awk -F'|' -v v="$vidx" -v n="$best" '$1 > v && $2 == n { print $1; exit }')
 fi
 
-IFS=',' read -r src_w src_h avg_rate < <(ffprobe -v error -select_streams "$vidx" \
-    -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$input")
+src_w=0 src_h=0 avg_rate="" sar="" rotation=0
+while IFS='=' read -r key value; do
+    case $key in
+        width) src_w=$value ;; height) src_h=$value ;; avg_frame_rate) avg_rate=$value ;;
+        sample_aspect_ratio) sar=$value ;; rotation) rotation=${value%.*} ;;
+    esac
+done < <(ffprobe -v error -select_streams "$vidx" -of default=nw=1 \
+    -show_entries stream=width,height,avg_frame_rate,sample_aspect_ratio:stream_side_data=rotation "$input")
+(( src_w > 0 && src_h > 0 )) || die "can't read the picture size of $(basename "$input")"
+# Work with the size as displayed: non-square pixels (anamorphic video; viewers ignore the
+# GIF header's aspect field) and phone videos stored sideways with a rotation flag, which
+# ffmpeg turns upright when decoding.
+if [[ $sar =~ ^([0-9]+):([0-9]+)$ ]] && (( BASH_REMATCH[1] > 0 && BASH_REMATCH[2] > 0 )) \
+    && [[ $(ffprobe -v error -show_entries format=format_name -of csv=p=0 "$input") != gif ]]; then
+    src_w=$(( (src_w * BASH_REMATCH[1] + BASH_REMATCH[2] / 2) / BASH_REMATCH[2] ))
+fi
+if (( rotation % 180 != 0 )); then t=$src_w; src_w=$src_h; src_h=$t; fi
 fallback=$(awk -v r="$avg_rate" 'BEGIN { split(r, a, "/"); f = (a[2] ? a[1] / a[2] : 0); printf "%.6f", (f > 0 ? 1 / f : 0.1) }')
 
 # Per-frame durations: gap to the next frame's timestamp, else the frame's own
@@ -368,6 +392,7 @@ max_h=$((src_h * 4))
 
 # Until the model is chosen, assume a 4× model (the largest)
 need=$(space_for 4)
+mkdir -p "$WORKROOT" || die "can't create $WORKROOT"
 free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 
@@ -422,17 +447,32 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
     (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
 
+    # zenity forms have no tooltips, so the custom-width help is shown in the window text
+    custom_help="<small><b>Custom width:</b> type a width in pixels, e.g. <tt>$(even $((src_w * 3)))</tt>, to use instead of <i>Output size</i>.
+Height follows the original aspect ratio, and both are rounded to even numbers.
+Up to <b>$((src_w * 4))</b> px (the model's 4×) stays sharp; larger values are stretched.
+Leave empty to use <i>Output size</i>.</small>"
+
     join() { local IFS='|'; echo "$*"; }
-    fields=(--add-combo="Model" --combo-values="$(join "${model_items[@]}")"
-        --add-combo="Output size" --combo-values="$(join "${size_items[@]}")"
-        --add-entry="Custom width (optional, overrides size)"
-        --add-combo="Format" --combo-values="$(join "${format_items[@]}")")
-    (( ${#gpu_items[@]} )) && fields+=(--add-combo="GPU" --combo-values="$(join "${gpu_items[@]}")")
+    # Only ask for what the command line didn't settle
+    fields=() keys=()
+    field() { keys+=("$1"); shift; fields+=("$@"); }
+    [[ -n $model ]] || field model --add-combo="Model" --combo-values="$(join "${model_items[@]}")"
+    if [[ -z $width && -z $height ]]; then
+        field size --add-combo="Output size" --combo-values="$(join "${size_items[@]}")"
+        field custom --add-entry="Custom width in pixels (optional)"
+    else
+        custom_help=""
+    fi
+    [[ -n $format ]] || field format --add-combo="Format" --combo-values="$(join "${format_items[@]}")"
+    (( ${#gpu_items[@]} )) && field gpu --add-combo="GPU" --combo-values="$(join "${gpu_items[@]}")"
     form=$(zenity --forms --title="Upscale GIF" --width=480 --separator=$'\x1f' \
-        --text="<b>$(basename "$input")</b>\n${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps\n$space_note$warn" \
+        --text="<b>$(basename "$input")</b>\n${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps\n$space_note$warn${custom_help:+\n\n$custom_help}" \
         "${fields[@]}") || exit 0
     IFS=$'\x1f' read -r -a answers <<<"$form"
-    f_model=${answers[0]:-} f_size=${answers[1]:-} f_custom=${answers[2]:-} f_format=${answers[3]:-} f_gpu=${answers[4]:-}
+    declare -A answer=()
+    for i in "${!keys[@]}"; do answer[${keys[$i]}]=${answers[$i]:-}; done
+    f_model=${answer[model]:-} f_size=${answer[size]:-} f_custom=${answer[custom]:-} f_format=${answer[format]:-} f_gpu=${answer[gpu]:-}
 
     [[ -n $model ]] || model=${f_model%% —*}
     [[ -n $model ]] || model=${model_items[0]%% —*}
@@ -467,29 +507,45 @@ else
     [[ $height =~ ^[0-9]+$ ]] && (( height > 0 )) || die "height must be a whole number"
     out_h=$(even "$height"); out_w=$(even $((height * src_w / src_h)))
 fi
+(( out_w >= 2 )) || out_w=2
+(( out_h >= 2 )) || out_h=2
 (( need <= free )) || die "not enough space in $WORKROOT: $space_note"
 (( out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's ${scale}× (${max_w}px); the last step will enlarge."
 
 output=${output:-${input%.*}_${out_w}x${out_h}.$format}
-[[ $(realpath -m "$output") != $(realpath "$input") ]] || die "output would overwrite the input"
+[[ $(realpath -m "$output") != "$input" ]] || die "output would overwrite the input"
+out_dir=$(dirname -- "$output")
+[[ -d $out_dir ]] || die "folder not found: $out_dir"
+[[ -w $out_dir ]] || die "can't write to $out_dir"
 
 printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"
 
 echo "Input:  ${src_w}×${src_h}, $count frames, ${total}s, ~$fps fps"
 echo "Output: ${out_w}×${out_h} $format, model $model (${scale}×), GPU $gpu"
 
-# Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB
+# Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB.
+# The slow steps run in the background so that closing the terminal or a kill stops them
+# too (bash only runs traps between commands) and the work folder is always removed.
+work="" child=""
+cleanup() {
+    # A second Ctrl+C mustn't interrupt the cleanup
+    trap '' INT TERM HUP
+    if [[ -n $child ]]; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi
+    [[ -z $work ]] || rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+run() { "$@" & child=$!; wait "$child"; local rc=$?; child=""; return $rc; }
 work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
-trap 'rm -rf "$work"' EXIT
 mkdir "$work/frames" "$work/upscaled"
 
 # --- Extract (lossless PNG, every frame, transparency kept) ----------------------------
 echo "Extracting frames..."
 if [[ -n $aidx ]]; then
-    ffmpeg -v error -i "$input" -filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba" \
+    run ffmpeg -nostdin -v error -i "$input" -filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba" \
         -fps_mode passthrough "$work/frames/%06d.png"
 else
-    ffmpeg -v error -i "$input" -map "0:$vidx" -fps_mode passthrough -pix_fmt rgba "$work/frames/%06d.png"
+    run ffmpeg -nostdin -v error -i "$input" -map "0:$vidx" -fps_mode passthrough -pix_fmt rgba "$work/frames/%06d.png"
 fi
 extracted=$(ls "$work/frames" | wc -l)
 if (( extracted != count )); then
@@ -502,7 +558,7 @@ fi
 # --- Upscale 4× ----------------------------------------------------------------------
 echo "Upscaling $count frames with $model..."
 gpu_arg=(); [[ $gpu == auto ]] || gpu_arg=(-g "$gpu")
-"$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
+run "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
     -z "$scale" -s "$scale" "${gpu_arg[@]}" -f png >"$work/upscayl.log" 2>&1 \
     || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
 upscaled=$(ls "$work/upscaled" | wc -l)
@@ -514,7 +570,10 @@ upscaled=$(ls "$work/upscaled" | wc -l)
 # entry's duration is ignored (it lasts one tick), so GIF sets the final delay directly and
 # the other formats end with a one-tick copy of the last frame.
 list=$work/frames.txt
-frame() { printf "file '%s'\noption framerate 90000\n" "$work/upscaled/$(printf %06d "$1").png"; }
+frame() {
+    local p=$work/upscaled/$(printf %06d "$1").png
+    printf "file '%s'\noption framerate 90000\n" "${p//\'/\'\\\'\'}"
+}
 for i in "${!durations[@]}"; do
     frame $((i + 1)); printf "duration %s\n" "${durations[$i]}"
 done >"$list"
@@ -522,27 +581,33 @@ done >"$list"
 final_delay=$(awk -v d="${durations[count - 1]}" 'BEGIN { printf "%d", d * 100 + 0.5 }')
 
 echo "Encoding $format..."
-resize="scale=${out_w}:${out_h}:flags=lanczos"
-in=(-v error -stats -y -f concat -safe 0 -i "$list")
-audio=(-i "$input" -map 0:v -map "1:a:0?")
+resize="scale=${out_w}:${out_h}:flags=lanczos,setsar=1"
+in=(-nostdin -v error -stats -y -f concat -safe 0 -i "$list")
+# The frames start at 0; when the picture starts later than the audio, skip that much
+# audio so they stay in sync
+first=$(ffprobe -v error -select_streams "$vidx" -read_intervals '%+#1' \
+    -show_entries frame=best_effort_timestamp_time -of default=nw=1:nk=1 "$input" | head -1)
+start=$(ffprobe -v error -show_entries format=start_time -of default=nw=1:nk=1 "$input")
+skip=$(awk -v a="$first" -v b="$start" 'BEGIN { d = a - b; if (a != "N/A" && b != "N/A" && d > 0.001) printf "%.6f", d }')
+audio=(${skip:+-ss "$skip"} -i "$input" -map 0:v -map "1:a:0?")
 case $format in
     gif)
-        ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+        run ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
-            -loop 0 -final_delay "$final_delay" "$output" ;;
+            -loop 0 -final_delay "$final_delay" -f gif "$output" ;;
     mp4)
         # H.264 has no alpha: transparent areas become black
-        ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
+        run ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
             -vf "$resize,format=rgba,premultiply=inplace=1,format=yuv420p" \
-            -c:v libx264 -preset slow -crf 16 -c:a aac -b:a 192k -movflags +faststart "$output" ;;
+            -c:v libx264 -preset slow -crf 16 -c:a aac -b:a 192k -movflags +faststart -f mp4 "$output" ;;
     webm)
-        ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
-            -c:v libvpx-vp9 -crf 18 -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k "$output" ;;
+        run ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
+            -c:v libvpx-vp9 -crf 18 -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k -f webm "$output" ;;
     avif)
         # AVIF stores transparency as a second AV1 stream
-        ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+        run ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]" -map "[c]" -map "[al]" \
-            -c:v libaom-av1 -crf 20 -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p "$output" ;;
+            -c:v libaom-av1 -crf 20 -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p -f avif "$output" ;;
 esac
 
 msg="Saved $(basename "$output") ($(du -h "$output" | cut -f1))"

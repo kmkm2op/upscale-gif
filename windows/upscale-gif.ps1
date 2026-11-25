@@ -108,6 +108,7 @@ function Lines([string]$Text) { @($Text -split "`r?`n" | Where-Object { $_ -ne '
 $script:FormsLoaded = $false
 function Use-Forms {
     if ($script:FormsLoaded) { return }
+    if (-not $OnWindows) { Fail 'missing -m/-f/-w options (the settings window needs Windows)' }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
     $script:FormsLoaded = $true
@@ -569,7 +570,11 @@ function Show-Check {
 
 # --- Main --------------------------------------------------------------------------------
 function Invoke-Main {
-    if ($Help) { Write-Host $Usage; return 0 }
+    if ($Help) {
+        # PowerShell options ignore case, so -H is -Help here rather than the height
+        if ($Path -or $Model -or $Width -or $Format -or $Output) { Fail 'for the output height use -Height (-h shows the help)' }
+        Write-Host $Usage; return 0
+    }
     if ($Extra) { Fail "unexpected argument '$($Extra[0])' (choose one file at a time)" }
 
     $script:FFmpeg, $script:FFprobe = Find-FFmpeg
@@ -591,6 +596,15 @@ function Invoke-Main {
     if (-not $script:Upscayl) { Fail 'Upscayl not found. Install it from upscayl.org, or set UPSCAYL_BIN to the path of upscayl-bin.exe (run with -c for details).' }
     if (-not $script:Models) { Fail "found $script:Upscayl but no models folder next to it; set UPSCAYL_MODELS" }
     $gpu = if ($Gpu) { $Gpu.ToLowerInvariant() } else { '' }
+    # The output name's extension picks the format when -f isn't given
+    $format = if ($Format) { $Format.ToLowerInvariant() } else { '' }
+    if ($Output) {
+        $ext = [IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+        if ($ext -match '^(gif|mp4|webm|avif)$') {
+            if ($format -and $format -ne $ext) { Fail "output name ends in .$ext but the format is $format" }
+            $format = $ext
+        }
+    }
     if ($gpu -and $gpu -notmatch '^(auto|\d+(,\d+)*)$') { Fail 'GPU must be auto, a number or a list like 0,1 (see -c)' }
 
     # Remembered choices from the last run
@@ -635,11 +649,27 @@ function Invoke-Main {
         if ($alpha) { $aidx = $alpha.Index }
     }
 
-    $info = ((Invoke-Tool $script:FFprobe @('-v', 'error', '-select_streams', "$vidx", '-show_entries', 'stream=width,height,avg_frame_rate',
-        '-of', 'csv=p=0', $inputFile) -Capture).Out).Trim().Split(',')
-    $srcW = [long]$info[0]; $srcH = [long]$info[1]
+    $info = @{}
+    foreach ($l in (Lines (Invoke-Tool $script:FFprobe @('-v', 'error', '-select_streams', "$vidx", '-of', 'default=nw=1', '-show_entries',
+        'stream=width,height,avg_frame_rate,sample_aspect_ratio:stream_side_data=rotation', $inputFile) -Capture).Out)) {
+        $p = $l.Split([char[]]'=', 2)
+        if ($p.Count -eq 2 -and -not $info.Contains($p[0])) { $info[$p[0]] = $p[1].Trim() }
+    }
+    $srcW = 0L; $srcH = 0L
+    if (-not ([long]::TryParse([string]$info['width'], [ref]$srcW) -and [long]::TryParse([string]$info['height'], [ref]$srcH)) -or $srcW -le 0 -or $srcH -le 0) {
+        Fail "can't read the picture size of $name"
+    }
+    # Work with the size as displayed: non-square pixels (anamorphic video; viewers ignore
+    # the GIF header's aspect field) and phone videos stored sideways with a rotation flag,
+    # which ffmpeg turns upright when decoding.
+    $formatName = ((Invoke-Tool $script:FFprobe @('-v', 'error', '-show_entries', 'format=format_name', '-of', 'csv=p=0', $inputFile) -Capture).Out).Trim()
+    if ([string]$info['sample_aspect_ratio'] -match '^(\d+):(\d+)$' -and [long]$Matches[1] -gt 0 -and [long]$Matches[2] -gt 0 -and $formatName -ne 'gif') {
+        $srcW = [long][math]::Round($srcW * [long]$Matches[1] / [long]$Matches[2], [MidpointRounding]::AwayFromZero)
+    }
+    $rotation = ToNum ([string]$info['rotation'])
+    if ($null -ne $rotation -and ([long]$rotation) % 180 -ne 0) { $t = $srcW; $srcW = $srcH; $srcH = $t }
     $fallback = 0.1
-    $rate = $info[2].Split('/')
+    $rate = ([string]$info['avg_frame_rate']).Split('/')
     if ($rate.Count -eq 2) {
         $num = ToNum $rate[0]; $den = ToNum $rate[1]
         if ($num -gt 0 -and $den -gt 0) { $fallback = $den / $num }
@@ -683,8 +713,7 @@ function Invoke-Main {
     $need = & $spaceFor 4
     $spaceNote = "Needs ~$(Human $need) of temporary space ($(Human $free) free)"
 
-    $model = $Model; $format = if ($Format) { $Format.ToLowerInvariant() } else { '' }
-    $width = $Width; $height = $Height
+    $model = $Model; $width = $Width; $height = $Height
 
     # --- Settings window (only for what wasn't given on the command line) ---
     if (-not $model -or -not $format -or (-not $width -and -not $height)) {
@@ -740,22 +769,29 @@ function Invoke-Main {
         $customHelp = "Custom width: type a width in pixels, e.g. $(Even ($srcW * 3)), to use instead of Output size. " +
             'Height follows the original aspect ratio, and both are rounded to even numbers. ' +
             "Up to $($srcW * 4) px (the model's 4$x) stays sharp; larger values are stretched. Leave empty to use Output size."
-        $fields = @(
-            @{ Label = 'Model'; Items = $modelItems },
-            @{ Label = 'Output size'; Items = $sizeItems },
-            @{ Label = 'Custom width in pixels (optional)'; Tip = $customHelp },
-            @{ Label = 'Format'; Items = $formatItems }
-        )
-        if ($gpuItems) { $fields += @{ Label = 'GPU'; Items = $gpuItems } }
-        $answers = Show-Settings "$name`n$srcW $x $srcH, $count frames, ${total}s, ~$fps fps`n$spaceNote$warn`n`n$customHelp" $fields
-        if ($null -eq $answers) { return 0 }
+        # Only ask for what the command line didn't settle
+        $fields = @(); $keys = @()
+        $askSize = -not $width -and -not $height
+        if (-not $model) { $fields += @{ Label = 'Model'; Items = $modelItems }; $keys += 'model' }
+        if ($askSize) {
+            $fields += @{ Label = 'Output size'; Items = $sizeItems }; $keys += 'size'
+            $fields += @{ Label = 'Custom width in pixels (optional)'; Tip = $customHelp }; $keys += 'custom'
+        }
+        if (-not $format) { $fields += @{ Label = 'Format'; Items = $formatItems }; $keys += 'format' }
+        if ($gpuItems) { $fields += @{ Label = 'GPU'; Items = $gpuItems }; $keys += 'gpu' }
+        $text = "$name`n$srcW $x $srcH, $count frames, ${total}s, ~$fps fps`n$spaceNote$warn"
+        if ($askSize) { $text += "`n`n$customHelp" }
+        $result = Show-Settings $text $fields
+        if ($null -eq $result) { return 0 }
+        $answer = @{}
+        for ($i = 0; $i -lt $keys.Count; $i++) { $answer[$keys[$i]] = $result[$i] }
 
-        if (-not $model) { $model = $modelValues[$answers[0]] }
-        if (-not $format) { $format = $formatValues[$answers[3]] }
-        if ($gpuItems) { $gpu = $gpuValues[$answers[4]] }
-        if (-not $width -and -not $height) {
-            $custom = $answers[2] -replace '\s', ''
-            if ($custom) { $width = $custom } else { $width = [string]$sizeValues[$answers[1]] }
+        if (-not $model) { $model = $modelValues[$answer.model] }
+        if (-not $format) { $format = $formatValues[$answer.format] }
+        if ($gpuItems) { $gpu = $gpuValues[$answer.gpu] }
+        if ($askSize) {
+            $custom = [string]$answer.custom -replace '\s', ''
+            if ($custom) { $width = $custom } else { $width = [string]$sizeValues[$answer.size] }
         }
     }
 
@@ -774,6 +810,7 @@ function Invoke-Main {
         if ($height -notmatch '^\d+$' -or [long]$height -le 0) { Fail 'height must be a whole number' }
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
+    $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
     if ($need -gt $free) { Fail "not enough space in ${workRoot}: $spaceNote" }
     if ($outW -gt $maxW) { Write-Host "Note: ${outW}px is wider than the model's ${scale}x (${maxW}px); the last step will enlarge." }
 
@@ -784,6 +821,8 @@ function Invoke-Main {
     $outFile = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).ProviderPath, $outFile))
     $same = if ($OnWindows) { $outFile -ieq $inputFile } else { $outFile -ceq $inputFile }
     if ($same) { Fail 'output would overwrite the input' }
+    $outDir = Split-Path $outFile
+    if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { Fail "folder not found: $outDir" }
 
     try {
         if (-not (Test-Path -LiteralPath $confDir)) { [void](New-Item -ItemType Directory -Path $confDir) }
@@ -806,9 +845,9 @@ function Invoke-Main {
         Write-Host 'Extracting frames...'
         $pattern = Join-Path $frames '%06d.png'
         if ($null -ne $aidx) {
-            $a = @('-v', 'error', '-i', $inputFile, '-filter_complex', "[0:$vidx][0:$aidx]alphamerge,format=rgba", '-fps_mode', 'passthrough', $pattern)
+            $a = @('-nostdin', '-v', 'error', '-i', $inputFile, '-filter_complex', "[0:$vidx][0:$aidx]alphamerge,format=rgba", '-fps_mode', 'passthrough', $pattern)
         } else {
-            $a = @('-v', 'error', '-i', $inputFile, '-map', "0:$vidx", '-fps_mode', 'passthrough', '-pix_fmt', 'rgba', $pattern)
+            $a = @('-nostdin', '-v', 'error', '-i', $inputFile, '-map', "0:$vidx", '-fps_mode', 'passthrough', '-pix_fmt', 'rgba', $pattern)
         }
         if ((Invoke-Tool $script:FFmpeg $a).Code -ne 0) { Fail 'ffmpeg could not read the frames' }
         $extracted = @(Get-ChildItem -LiteralPath $frames -Filter '*.png').Count
@@ -854,29 +893,36 @@ function Invoke-Main {
         $finalDelay = [string][long][math]::Round($durations[$count - 1] * 100, [MidpointRounding]::AwayFromZero)
 
         Write-Host "Encoding $format..."
-        $resize = "scale=${outW}:${outH}:flags=lanczos"
-        $in = @('-v', 'error', '-stats', '-y', '-f', 'concat', '-safe', '0', '-i', $list)
-        $audio = @('-i', $inputFile, '-map', '0:v', '-map', '1:a:0?')
+        $resize = "scale=${outW}:${outH}:flags=lanczos,setsar=1"
+        $in = @('-nostdin', '-v', 'error', '-stats', '-y', '-f', 'concat', '-safe', '0', '-i', $list)
+        # The frames start at 0; when the picture starts later than the audio, skip that
+        # much audio so they stay in sync
+        $first = ToNum ((Lines (Invoke-Tool $script:FFprobe @('-v', 'error', '-select_streams', "$vidx", '-read_intervals', '%+#1',
+            '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'default=nw=1:nk=1', $inputFile) -Capture).Out) | Select-Object -First 1)
+        $start = ToNum ((Invoke-Tool $script:FFprobe @('-v', 'error', '-show_entries', 'format=start_time', '-of', 'default=nw=1:nk=1', $inputFile) -Capture).Out.Trim())
+        $audio = @()
+        if ($null -ne $first -and $null -ne $start -and $first - $start -gt 0.001) { $audio += '-ss', (Num ($first - $start)) }
+        $audio += '-i', $inputFile, '-map', '0:v', '-map', '1:a:0?'
         switch ($format) {
             'gif' {
                 $a = $in + @('-fps_mode', 'vfr', '-filter_complex',
                     "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128",
-                    '-loop', '0', '-final_delay', $finalDelay, $outFile)
+                    '-loop', '0', '-final_delay', $finalDelay, '-f', 'gif', $outFile)
             }
             'mp4' {
                 # H.264 has no alpha: transparent areas become black
                 $a = $in + $audio + @('-fps_mode', 'vfr', '-vf', "$resize,format=rgba,premultiply=inplace=1,format=yuv420p",
-                    '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', $outFile)
+                    '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', $outFile)
             }
             'webm' {
                 $opus = if ($script:Encoders.Contains('libopus')) { 'libopus' } else { 'libvorbis' }
                 $a = $in + $audio + @('-fps_mode', 'vfr', '-vf', $resize, '-pix_fmt', 'yuva420p',
-                    '-c:v', 'libvpx-vp9', '-crf', '18', '-b:v', '0', '-row-mt', '1', '-auto-alt-ref', '0', '-c:a', $opus, '-b:a', '160k', $outFile)
+                    '-c:v', 'libvpx-vp9', '-crf', '18', '-b:v', '0', '-row-mt', '1', '-auto-alt-ref', '0', '-c:a', $opus, '-b:a', '160k', '-f', 'webm', $outFile)
             }
             'avif' {
                 # AVIF stores transparency as a second AV1 stream
                 $a = $in + @('-fps_mode', 'vfr', '-filter_complex', "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]",
-                    '-map', '[c]', '-map', '[al]', '-c:v', 'libaom-av1', '-crf', '20', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt:0', 'yuv444p', $outFile)
+                    '-map', '[c]', '-map', '[al]', '-c:v', 'libaom-av1', '-crf', '20', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt:0', 'yuv444p', '-f', 'avif', $outFile)
             }
         }
         if ((Invoke-Tool $script:FFmpeg $a).Code -ne 0) { Fail "ffmpeg could not encode $format" }

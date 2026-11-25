@@ -80,7 +80,7 @@ upscale-gif -h     # help
 | `-m model`  | Upscayl model name, e.g. `digital-art-4x` (see `-c` for the list) |
 | `-w width`  | Output width in pixels; height follows the aspect ratio |
 | `-H height` | Output height in pixels; width follows the aspect ratio |
-| `-f format` | `gif`, `mp4`, `webm` or `avif` |
+| `-f format` | `gif`, `mp4`, `webm` or `avif`. Can be left out when `-o` ends in one of these |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 
@@ -100,6 +100,9 @@ upscale-gif                                   # everything from the windows
 upscale-gif -m digital-art-4x -w 1920 -f webm anime.gif
 upscale-gif -m high-fidelity-4x -H 2160 -f mp4 -o out.mp4 clip.mp4
 ```
+
+Sizes follow the picture as it's displayed: rotated phone videos come out upright, and
+non-square pixels (anamorphic video) are made square.
 
 Output sizes are rounded to even numbers. Sizes above 4× still work, but the final step
 just enlarges the image.

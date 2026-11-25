@@ -54,6 +54,8 @@ Command line
   powershell -ExecutionPolicy Bypass -File upscale-gif.ps1 [-m model] [-w width | -Height height]
       [-f gif|mp4|webm|avif] [-g gpu] [-o output] [file]
 
+  -f can be left out when -o ends in .gif, .mp4, .webm or .avif.
+  Use -Height (not -H, which PowerShell reads as -h for help).
   -c   show the detected Upscayl, models, GPUs and ffmpeg encoders
   -h   help
 
