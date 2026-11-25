@@ -53,6 +53,20 @@ Or copy `upscale-gif` anywhere on your `PATH` and make it executable.
 
 Run `upscale-gif -c` to check what was detected.
 
+## Windows
+
+`windows/` has a PowerShell version with the same features. It needs no extra software
+beyond Upscayl and ffmpeg, and it uses Windows dialogs instead of zenity. Build the zip with:
+
+```sh
+make windows                  # creates dist/upscale-gif-<version>-windows.zip
+make windows VERSION=1.1.0
+```
+
+On Windows, extract the zip and run `Install.cmd`. It needs no administrator rights. It adds
+"Upscale GIF" to the Start menu, the desktop and the "Send to" menu, and offers to install
+ffmpeg and Upscayl with winget if they're missing. See [windows/README.txt](windows/README.txt).
+
 ## Usage
 
 ```

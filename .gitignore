@@ -6,3 +6,4 @@
 *.apng
 *.mkv
 *.mov
+dist/
