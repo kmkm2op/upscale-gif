@@ -14,7 +14,8 @@ The output keeps every frame's original timing, its transparency and its audio.
 1. Probes the input and works out each frame's exact duration (variable frame timing is
    supported).
 2. Extracts every frame as a lossless RGBA PNG.
-3. Upscales all frames 4× with `upscayl-bin` on the GPU (Vulkan).
+3. Upscales all frames with `upscayl-bin` on the GPU (Vulkan), at the model's own scale
+   (4× for the built-in models).
 4. Downsamples to the size you chose (Lanczos), then reassembles the frames with their
    original durations.
 5. Encodes the result:
@@ -37,6 +38,7 @@ because they can take several GB. That folder is deleted when the script exits.
 - Upscayl, from any source: distro package, .deb/.rpm, Snap, Flatpak, or an extracted
   AppImage
 - A GPU with Vulkan support
+- python3 (optional): reads Upscayl's own settings, i.e. its custom models folder and GPU ID
 - For the windows: `zenity` (and `kdialog` for the file picker, when available),
   plus `notify-send` for the "done" notification
 
@@ -54,8 +56,8 @@ Run `upscale-gif -c` to check what was detected.
 ## Usage
 
 ```
-upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-o output] [input]
-upscale-gif -c     # show detected Upscayl, models and ffmpeg encoders
+upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [input]
+upscale-gif -c     # show detected Upscayl, models, GPUs and ffmpeg encoders
 upscale-gif -h     # help
 ```
 
@@ -65,6 +67,7 @@ upscale-gif -h     # help
 | `-w width`  | Output width in pixels; height follows the aspect ratio |
 | `-H height` | Output height in pixels; width follows the aspect ratio |
 | `-f format` | `gif`, `mp4`, `webm` or `avif` |
+| `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 
 Anything you don't give on the command line is asked for:
@@ -72,7 +75,7 @@ Anything you don't give on the command line is asked for:
 - No input file: a file picker opens.
 - No model, size or format: a settings window opens. It shows the source size, frame count,
   duration, fps and the temporary space needed. The size list offers 2×/3×/4× and
-  720p–2160p presets.
+  720p–2160p presets. With more than one GPU, it also offers a GPU choice.
 
 The last model, format and folder you used are saved in `~/.config/upscale-gif.conf`.
 
@@ -108,6 +111,26 @@ The models folder is found next to the binary, or set with `UPSCAYL_MODELS`.
 ./Upscayl-*.AppImage --appimage-extract
 export UPSCAYL_BIN=$PWD/squashfs-root/resources/bin/upscayl-bin
 ```
+
+## Custom models
+
+The script uses the custom models folder chosen in Upscayl itself
+(**Settings → Custom models folder**), so models added there show up in both. Get models
+from [upscayl/custom-models](https://github.com/upscayl/custom-models); each one is a
+`.param` + `.bin` pair. To use a different folder, set `UPSCAYL_CUSTOM_MODELS`.
+
+As in Upscayl, the model's scale comes from its name: names containing `x2`/`2x` are 2×,
+`x3`/`3x` are 3×, and all others are 4×.
+
+Upscayl keeps its settings in its Chromium storage (`~/.config/Upscayl/Local Storage`,
+or the Flatpak/Snap equivalent). The script reads them with python3 and never writes to
+them. Upscayl must have saved the setting, which normally happens within seconds of
+choosing the folder.
+
+## GPU
+
+The GPU is chosen by `-g`, else by Upscayl's **GPU ID** setting, else automatically.
+`upscale-gif -c` lists the GPUs with the IDs Upscayl uses.
 
 ## Notes
 

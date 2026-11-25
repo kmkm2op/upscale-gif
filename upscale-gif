@@ -2,25 +2,28 @@
 # Upscale an animation or video (gif, mp4, webm, avif, webp, apng, mkv, mov...) with Upscayl
 # and save it as gif, mp4, webm or avif.
 #
-# Usage: upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-o output] [input]
-#        upscale-gif -c    (show detected tools and models)
+# Usage: upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [input]
+#        upscale-gif -c    (show detected tools, models and GPUs)
 # Anything not given on the command line is asked for in a settings window.
-# Frames are upscaled 4x by the model, then downsampled (Lanczos) to the chosen size.
+# Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos) to the chosen size.
 # Every frame keeps its original timing; audio is kept for mp4/webm output.
 #
 # Requirements: bash 4+, ffmpeg/ffprobe 7+ (8+ for animated WebP input), GNU coreutils,
 # Upscayl (any install: distro package, .deb/.rpm, Snap, Flatpak) and, for the windows,
-# zenity (kdialog is used for the file picker when available).
+# zenity (kdialog is used for the file picker when available). python3 is used to read
+# Upscayl's own settings (custom models folder, GPU ID); without it they are ignored.
 # Upscayl is found automatically; to use another install set UPSCAYL_BIN (path to
 # upscayl-bin) and optionally UPSCAYL_MODELS (folder of .param/.bin models).
 # An AppImage can be used after extracting it: ./Upscayl.AppImage --appimage-extract,
 # then UPSCAYL_BIN=squashfs-root/resources/bin/upscayl-bin.
+# Custom models come from the folder chosen in Upscayl (Settings > Custom models folder),
+# or from UPSCAYL_CUSTOM_MODELS. The GPU is -g, else Upscayl's GPU ID setting, else auto.
 
 set -euo pipefail
 
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
 WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
-model="" format="" width="" height="" output="" input=""
+model="" format="" width="" height="" output="" input="" gpu=""
 
 declare -A DESC=(
     [upscayl-standard-4x]="General purpose"
@@ -84,14 +87,183 @@ UPSCAYL=$(find_upscayl) || UPSCAYL=""
 MODELS=""
 [[ -n $UPSCAYL ]] && MODELS=$(find_models "$UPSCAYL") || true
 
+# --- Upscayl's own settings ---------------------------------------------------------------
+# The Upscayl app keeps its settings in Chromium localStorage, a LevelDB database whose
+# table files are snappy-compressed. This prints one line per requested key (empty if unset),
+# taking the newest record across the write-ahead log and table files.
+upscayl_settings() {
+    local d
+    have python3 || { printf '\n%.0s' "$@"; return; }
+    for d in "${XDG_CONFIG_HOME:-$HOME/.config}/Upscayl" "$HOME/.var/app/org.upscayl.Upscayl/config/Upscayl" \
+        "$HOME/snap/upscayl/current/.config/Upscayl"; do
+        [[ -d "$d/Local Storage/leveldb" ]] || continue
+        python3 - "$d/Local Storage/leveldb" "$@" <<'PY' && return
+import glob, json, os, sys
+
+def varint(b, i):
+    r = s = 0
+    while True:
+        c = b[i]; i += 1
+        r |= (c & 0x7f) << s; s += 7
+        if c < 0x80:
+            return r, i
+
+def unsnappy(b):
+    _, i = varint(b, 0)
+    o = bytearray()
+    while i < len(b):
+        t = b[i]; i += 1
+        if t & 3 == 0:
+            n = t >> 2
+            if n >= 60:
+                w = n - 59; n = int.from_bytes(b[i:i + w], "little"); i += w
+            o += b[i:i + n + 1]; i += n + 1
+            continue
+        if t & 3 == 1:
+            n = ((t >> 2) & 7) + 4; off = (t >> 5) << 8 | b[i]; i += 1
+        elif t & 3 == 2:
+            n = (t >> 2) + 1; off = int.from_bytes(b[i:i + 2], "little"); i += 2
+        else:
+            n = (t >> 2) + 1; off = int.from_bytes(b[i:i + 4], "little"); i += 4
+        for _ in range(n):
+            o.append(o[-off])
+    return bytes(o)
+
+def block(f, off, size):
+    f.seek(off); d = f.read(size + 1)
+    return unsnappy(d[:size]) if d[size] == 1 else d[:size]
+
+def entries(b):
+    end = len(b) - 4 - 4 * int.from_bytes(b[-4:], "little")
+    i, key = 0, b""
+    while i < end:
+        shared, i = varint(b, i); fresh, i = varint(b, i); vlen, i = varint(b, i)
+        key = key[:shared] + b[i:i + fresh]; i += fresh
+        yield key, b[i:i + vlen]; i += vlen
+
+def table(path):  # yields (key, sequence, is_value, value)
+    with open(path, "rb") as f:
+        f.seek(-48, 2); foot = f.read(48)
+        _, i = varint(foot, 0); _, i = varint(foot, i)
+        ioff, i = varint(foot, i); isize, i = varint(foot, i)
+        for _, h in entries(block(f, ioff, isize)):
+            boff, j = varint(h, 0); bsize, j = varint(h, j)
+            for k, v in entries(block(f, boff, bsize)):
+                tag = int.from_bytes(k[-8:], "little")
+                yield k[:-8], tag >> 8, tag & 0xff == 1, v
+
+def log(path):
+    data = open(path, "rb").read()
+    pos, rec = 0, b""
+    while pos + 7 <= len(data):
+        left = 32768 - pos % 32768
+        if left < 7:
+            pos += left; continue
+        n = data[pos + 4] | data[pos + 5] << 8; kind = data[pos + 6]
+        frag = data[pos + 7:pos + 7 + n]; pos += 7 + n
+        if kind in (1, 2):
+            rec = frag
+        elif kind in (3, 4):
+            rec += frag
+        else:
+            break
+        if kind not in (1, 4):
+            continue
+        seq = int.from_bytes(rec[:8], "little"); i = 12
+        for c in range(int.from_bytes(rec[8:12], "little")):
+            live = rec[i] == 1; i += 1
+            kl, i = varint(rec, i); k = rec[i:i + kl]; i += kl
+            v = b""
+            if live:
+                vl, i = varint(rec, i); v = rec[i:i + vl]; i += vl
+            yield k, seq + c, live, v
+
+d, names = sys.argv[1], sys.argv[2:]
+# localStorage keys are "_<origin>\0\1<name>"; values start with \1 (Latin-1) or \0 (UTF-16)
+suffix = {b"\0\1" + n.encode("latin-1"): n for n in names}
+best = {}
+files = [(table, p) for e in ("ldb", "sst") for p in glob.glob(os.path.join(d, "*." + e))]
+files += [(log, p) for p in glob.glob(os.path.join(d, "*.log"))]
+for reader, path in files:
+    try:
+        for k, seq, live, v in reader(path):
+            for s, n in suffix.items():
+                if k.startswith(b"_") and k.endswith(s) and seq > best.get(n, (-1,))[0]:
+                    best[n] = (seq, v if live else b"")
+    except Exception:
+        pass
+for n in names:
+    v, out = best.get(n, (0, b""))[1], ""
+    if v:
+        s = v[1:].decode("utf-16-le" if v[0] == 0 else "latin-1", "replace")
+        try:
+            s = json.loads(s)
+        except ValueError:
+            pass
+        if isinstance(s, (str, int)):
+            out = str(s).replace("\n", " ")
+    print(out)
+PY
+    done
+    printf '\n%.0s' "$@"
+}
+mapfile -t settings < <(upscayl_settings customModelsPath gpuId)
+upscayl_custom=${settings[0]:-} upscayl_gpu=${settings[1]:-}
+CUSTOM_MODELS=${UPSCAYL_CUSTOM_MODELS:-$upscayl_custom}
+
+# Every usable model (built-in first) and the folder it lives in
+declare -A MODEL_DIR=()
+MODEL_LIST=()
+add_models() {
+    local p n
+    for p in "$1"/*.param; do
+        n=${p##*/}; n=${n%.param}
+        [[ -f $1/$n.bin && -z ${MODEL_DIR[$n]:-} ]] || continue
+        MODEL_DIR[$n]=$1; MODEL_LIST+=("$n")
+    done
+}
+[[ -n $MODELS ]] && add_models "$MODELS"
+[[ -n $CUSTOM_MODELS && -d $CUSTOM_MODELS ]] && add_models "$CUSTOM_MODELS"
+is_custom() { [[ ${MODEL_DIR[$1]:-} != "$MODELS" ]]; }
+# Same rule as Upscayl: names with x2/2x or x3/3x are 2x/3x models, everything else 4x
+model_scale() {
+    case ${1,,} in *x2* | *2x*) echo 2 ;; *x3* | *3x*) echo 3 ;; *) echo 4 ;; esac
+}
+
+# GPUs as upscayl-bin numbers them ("id name" per line): it lists them before failing
+# on the missing input.
+gpus() {
+    local m=${MODEL_LIST[0]:-}
+    [[ -n $m ]] || return 0
+    timeout 30 "$UPSCAYL" -i /nonexistent/upscale-gif-probe.png -o /dev/null -m "${MODEL_DIR[$m]}" -n "$m" 2>&1 \
+        | sed -n 's/^\[\([0-9][0-9]*\) \(.*\)\]  queueC=.*/\1 \2/p' || true
+}
+
 encoder() { ffmpeg -hide_banner -encoders 2>/dev/null | awk '{ print $2 }' | grep -qx "$1"; }
 declare -A ENCODER=([gif]=gif [mp4]=libx264 [webm]=libvpx-vp9 [avif]=libaom-av1)
 
 check() {
-    local ok=0 f
+    local ok=0 f m src line builtin=() custom=()
+    for m in "${MODEL_LIST[@]}"; do
+        f=$m; (( $(model_scale "$m") == 4 )) || f+=" ($(model_scale "$m")×)"
+        if is_custom "$m"; then custom+=("$f"); else builtin+=("$f"); fi
+    done
     echo "Upscayl binary: ${UPSCAYL:-NOT FOUND (install Upscayl or set UPSCAYL_BIN)}"; [[ -n $UPSCAYL ]] || ok=1
     echo "Models folder:  ${MODELS:-NOT FOUND (set UPSCAYL_MODELS)}"; [[ -n $MODELS ]] || ok=1
-    [[ -n $MODELS ]] && echo "Models:         $(models | tr '\n' ' ')"
+    [[ -n $MODELS ]] && echo "Models:         ${builtin[*]}"
+    src="Upscayl settings"; [[ -n ${UPSCAYL_CUSTOM_MODELS:-} ]] && src=UPSCAYL_CUSTOM_MODELS
+    if [[ -z $CUSTOM_MODELS ]]; then
+        echo "Custom models:  none (choose a folder in Upscayl's settings, or set UPSCAYL_CUSTOM_MODELS)"
+        have python3 || echo "                (python3 is missing, so Upscayl's settings can't be read)"
+    elif [[ ! -d $CUSTOM_MODELS ]]; then
+        echo "Custom models:  $CUSTOM_MODELS (from $src) is missing"
+    else
+        echo "Custom models:  $CUSTOM_MODELS (from $src)"
+        echo "                ${custom[*]:-no usable .param/.bin pairs}"
+    fi
+    echo "GPUs:"
+    while read -r line; do echo "  $line"; done < <(gpus)
+    echo "  default: ${upscayl_gpu:-auto}${upscayl_gpu:+ (from Upscayl settings)}"
     for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
     if have ffmpeg; then
         echo "ffmpeg:         $(ffmpeg -version | head -1 | cut -d' ' -f3)"
@@ -114,17 +286,19 @@ pick_file() {
             --file-filter="Animations and videos | $filter" --file-filter="All files | *"
     fi
 }
-models() { ls "$MODELS" | sed -n 's/\.param$//p'; }
 even() { echo $(( ($1 + 1) / 2 * 2 )); }
 human() { numfmt --to=iec --suffix=B "$1"; }
+# Temporary space: PNG frames compress to roughly half of raw RGBA; original + upscaled copies
+space_for() { echo $(( count * src_w * src_h * 4 * (1 + $1 * $1) / 2 )); }
 
-while getopts "m:w:H:f:o:ch" opt; do
+while getopts "m:w:H:f:g:o:ch" opt; do
     case $opt in
         m) model=$OPTARG ;;
         w) width=$OPTARG ;;
         H) height=$OPTARG ;;
         f) format=${OPTARG,,} ;;
         o) output=$OPTARG ;;
+        g) gpu=${OPTARG,,} ;;
         c) check; exit ;;
         h) sed -n '5,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
         *) exit 1 ;;
@@ -136,6 +310,7 @@ input=${1:-}
 for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not installed"; done
 [[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
 [[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
+[[ -z $gpu || $gpu =~ ^(auto|[0-9]+(,[0-9]+)*)$ ]] || die "GPU must be auto, a number or a list like 0,1 (see -c)"
 
 # Remembered choices from the last run
 last_model=upscayl-standard-4x last_format=gif last_dir=$HOME
@@ -189,10 +364,10 @@ count=${#durations[@]}
 (( count > 0 )) || die "no frames found in $(basename "$input")"
 total=$(printf '%s\n' "${durations[@]}" | awk '{ s += $1 } END { printf "%.1f", s }')
 fps=$(awk -v n="$count" -v t="$total" 'BEGIN { printf "%.1f", (t > 0 ? n / t : 0) }')
-max_w=$((src_w * 4)) max_h=$((src_h * 4))
+max_h=$((src_h * 4))
 
-# PNG frames compress to roughly half of raw RGBA; original + 4x upscaled copies
-need=$(( count * src_w * src_h * 4 * 17 / 2 ))
+# Until the model is chosen, assume a 4× model (the largest)
+need=$(space_for 4)
 free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 
@@ -201,9 +376,14 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     gui || die "missing -m/-f/-w options (and no desktop session for the settings window)"
 
     model_items=()
-    for m in "$last_model" $(models); do
-        [[ -f $MODELS/$m.param ]] || continue
-        item="$m — ${DESC[$m]:-}"
+    for m in "$last_model" "${MODEL_LIST[@]}"; do
+        [[ -n ${MODEL_DIR[$m]:-} ]] || continue
+        if is_custom "$m"; then
+            item="$m — Custom model"
+            (( $(model_scale "$m") == 4 )) || item+=", $(model_scale "$m")×"
+        else
+            item="$m — ${DESC[$m]:-}"
+        fi
         [[ " ${model_items[*]} " == *" $item "* ]] || model_items+=("$item")
     done
 
@@ -222,23 +402,46 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
         [[ " ${format_items[*]} " == *" $f — "* ]] || format_items+=("$f — ${FMT_DESC[$f]}")
     done
 
+    # Only offer a GPU choice when there is one to make; the default comes first
+    gpu_items=()
+    if [[ -z $gpu ]]; then
+        mapfile -t gpu_list < <(gpus)
+        if (( ${#gpu_list[@]} > 1 )); then
+            for g in "${upscayl_gpu:-auto}" auto "${gpu_list[@]%% *}"; do
+                case $g in
+                    auto) item="auto — Let Upscayl choose" ;;
+                    *) item=$(printf '%s\n' "${gpu_list[@]}" | awk -v g="$g" '$1 == g { $1 = ""; print g " —" $0; exit }')
+                       [[ -n $item ]] || item="$g — Upscayl setting" ;;
+                esac
+                [[ " ${gpu_items[*]} " == *" $g — "* ]] || gpu_items+=("$item")
+            done
+        fi
+    fi
+
     warn=""
     (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
     (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
 
     join() { local IFS='|'; echo "$*"; }
+    fields=(--add-combo="Model" --combo-values="$(join "${model_items[@]}")"
+        --add-combo="Output size" --combo-values="$(join "${size_items[@]}")"
+        --add-entry="Custom width (optional, overrides size)"
+        --add-combo="Format" --combo-values="$(join "${format_items[@]}")")
+    (( ${#gpu_items[@]} )) && fields+=(--add-combo="GPU" --combo-values="$(join "${gpu_items[@]}")")
     form=$(zenity --forms --title="Upscale GIF" --width=480 --separator=$'\x1f' \
         --text="<b>$(basename "$input")</b>\n${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps\n$space_note$warn" \
-        --add-combo="Model" --combo-values="$(join "${model_items[@]}")" \
-        --add-combo="Output size" --combo-values="$(join "${size_items[@]}")" \
-        --add-entry="Custom width (optional, overrides size)" \
-        --add-combo="Format" --combo-values="$(join "${format_items[@]}")") || exit 0
-    IFS=$'\x1f' read -r f_model f_size f_custom f_format <<<"$form"
+        "${fields[@]}") || exit 0
+    IFS=$'\x1f' read -r -a answers <<<"$form"
+    f_model=${answers[0]:-} f_size=${answers[1]:-} f_custom=${answers[2]:-} f_format=${answers[3]:-} f_gpu=${answers[4]:-}
 
     [[ -n $model ]] || model=${f_model%% —*}
     [[ -n $model ]] || model=${model_items[0]%% —*}
     [[ -n $format ]] || format=${f_format%% —*}
     [[ -n $format ]] || format=$last_format
+    if (( ${#gpu_items[@]} )); then
+        [[ -n $f_gpu ]] || f_gpu=${gpu_items[0]}
+        gpu=${f_gpu%% —*}
+    fi
     if [[ -z $width && -z $height ]]; then
         if [[ -n ${f_custom// /} ]]; then
             width=${f_custom// /}
@@ -250,7 +453,11 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
 fi
 
 # --- Validate and work out the final size --------------------------------------------
-[[ -f $MODELS/$model.param ]] || die "unknown model '$model'. Available: $(models | tr '\n' ' ')"
+[[ -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]}"
+gpu=${gpu:-${upscayl_gpu:-auto}}
+scale=$(model_scale "$model")
+max_w=$((src_w * scale)) need=$(space_for "$scale")
+space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 [[ $format =~ ^(gif|mp4|webm|avif)$ ]] || die "unsupported format: $format"
 encoder "${ENCODER[$format]}" || die "this ffmpeg build can't encode $format (missing ${ENCODER[$format]})"
 if [[ -n $width ]]; then
@@ -261,7 +468,7 @@ else
     out_h=$(even "$height"); out_w=$(even $((height * src_w / src_h)))
 fi
 (( need <= free )) || die "not enough space in $WORKROOT: $space_note"
-(( out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's 4× (${max_w}px); the last step will enlarge."
+(( out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's ${scale}× (${max_w}px); the last step will enlarge."
 
 output=${output:-${input%.*}_${out_w}x${out_h}.$format}
 [[ $(realpath -m "$output") != $(realpath "$input") ]] || die "output would overwrite the input"
@@ -269,7 +476,7 @@ output=${output:-${input%.*}_${out_w}x${out_h}.$format}
 printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"
 
 echo "Input:  ${src_w}×${src_h}, $count frames, ${total}s, ~$fps fps"
-echo "Output: ${out_w}×${out_h} $format, model $model"
+echo "Output: ${out_w}×${out_h} $format, model $model (${scale}×), GPU $gpu"
 
 # Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB
 work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
@@ -294,8 +501,9 @@ fi
 
 # --- Upscale 4× ----------------------------------------------------------------------
 echo "Upscaling $count frames with $model..."
-"$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "$MODELS" -n "$model" \
-    -z 4 -s 4 -f png >"$work/upscayl.log" 2>&1 \
+gpu_arg=(); [[ $gpu == auto ]] || gpu_arg=(-g "$gpu")
+"$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
+    -z "$scale" -s "$scale" "${gpu_arg[@]}" -f png >"$work/upscayl.log" 2>&1 \
     || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
 upscaled=$(ls "$work/upscaled" | wc -l)
 (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
