@@ -509,19 +509,17 @@ upscaled=$(ls "$work/upscaled" | wc -l)
 (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
 
 # --- Reassemble with each frame's original timing ---------------------------------------
-# The concat demuxer ignores the last entry's duration and gives it a fixed 0.04 s, so a
-# longer last frame is split into (delay - 0.04 s) plus an identical 0.04 s copy.
+# The concat demuxer takes its time base from the images (1/25 s by default), which would
+# round every timestamp to 0.04 s; 1/90000 s is exact for all common frame rates. The last
+# entry's duration is ignored (it lasts one tick), so GIF sets the final delay directly and
+# the other formats end with a one-tick copy of the last frame.
 list=$work/frames.txt
-last=$((count - 1))
+frame() { printf "file '%s'\noption framerate 90000\n" "$work/upscaled/$(printf %06d "$1").png"; }
 for i in "${!durations[@]}"; do
-    d=${durations[$i]}
-    (( i == last )) && d=$(awk -v d="$d" 'BEGIN { printf "%.6f", (d > 0.045 ? d - 0.04 : 0) }')
-    printf "file '%s'\n" "$work/upscaled/$(printf %06d $((i + 1))).png"
-    [[ $d == 0.000000 ]] || printf "duration %s\n" "$d"
+    frame $((i + 1)); printf "duration %s\n" "${durations[$i]}"
 done >"$list"
-if [[ $(tail -1 "$list") == duration* ]]; then
-    printf "file '%s'\n" "$work/upscaled/$(printf %06d "$count").png" >>"$list"
-fi
+[[ $format == gif ]] || frame "$count" >>"$list"
+final_delay=$(awk -v d="${durations[count - 1]}" 'BEGIN { printf "%d", d * 100 + 0.5 }')
 
 echo "Encoding $format..."
 resize="scale=${out_w}:${out_h}:flags=lanczos"
@@ -531,7 +529,7 @@ case $format in
     gif)
         ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
-            -loop 0 "$output" ;;
+            -loop 0 -final_delay "$final_delay" "$output" ;;
     mp4)
         # H.264 has no alpha: transparent areas become black
         ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
