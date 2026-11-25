@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# Upscale an animation or video (gif, mp4, webm, avif, webp, apng, mkv, mov...) with Upscayl
+# and save it as gif, mp4, webm or avif.
+#
+# Usage: upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-o output] [input]
+#        upscale-gif -c    (show detected tools and models)
+# Anything not given on the command line is asked for in a settings window.
+# Frames are upscaled 4x by the model, then downsampled (Lanczos) to the chosen size.
+# Every frame keeps its original timing; audio is kept for mp4/webm output.
+#
+# Requirements: bash 4+, ffmpeg/ffprobe 7+ (8+ for animated WebP input), GNU coreutils,
+# Upscayl (any install: distro package, .deb/.rpm, Snap, Flatpak) and, for the windows,
+# zenity (kdialog is used for the file picker when available).
+# Upscayl is found automatically; to use another install set UPSCAYL_BIN (path to
+# upscayl-bin) and optionally UPSCAYL_MODELS (folder of .param/.bin models).
+# An AppImage can be used after extracting it: ./Upscayl.AppImage --appimage-extract,
+# then UPSCAYL_BIN=squashfs-root/resources/bin/upscayl-bin.
+
+set -euo pipefail
+
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
+WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
+model="" format="" width="" height="" output="" input=""
+
+declare -A DESC=(
+    [upscayl-standard-4x]="General purpose"
+    [upscayl-lite-4x]="General purpose, faster"
+    [digital-art-4x]="Digital art, anime, cartoons"
+    [high-fidelity-4x]="Photos, keeps fine detail"
+    [remacri-4x]="Natural and sharp"
+    [ultrasharp-4x]="Very sharp"
+    [ultramix-balanced-4x]="Balance of sharp and smooth"
+)
+declare -A FMT_DESC=(
+    [gif]="GIF" [webm]="WebM (VP9, keeps transparency and audio)"
+    [avif]="AVIF (AV1, keeps transparency)" [mp4]="MP4 (H.264, keeps audio, no transparency)"
+)
+
+have() { command -v "$1" >/dev/null 2>&1; }
+gui() { [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] && have zenity; }
+die() {
+    echo "upscale-gif: $*" >&2
+    if [[ ! -t 2 ]] && gui; then zenity --error --title="Upscale GIF" --text="$*" 2>/dev/null || true; fi
+    exit 1
+}
+
+# --- Locate Upscayl ---------------------------------------------------------------------
+# upscayl-bin is Upscayl's command-line upscaler; its -z (model scale) option tells it
+# apart from other Real-ESRGAN builds with a similar interface.
+is_upscayl() {
+    local out
+    [[ -f $1 && -x $1 ]] || return 1
+    out=$(timeout 10 "$1" -h 2>&1) || true    # -h exits non-zero
+    [[ $out == *"-z model-scale"* ]]
+}
+find_upscayl() {
+    local c
+    if [[ -n ${UPSCAYL_BIN:-} ]]; then
+        is_upscayl "$UPSCAYL_BIN" || return 1
+        realpath "$UPSCAYL_BIN"; return
+    fi
+    for c in "$(command -v upscayl-bin 2>/dev/null)" "$(command -v upscayl-ncnn 2>/dev/null)" \
+        /usr/share/upscayl/bin/upscayl-bin /usr/lib/upscayl/resources/bin/upscayl-bin \
+        /opt/Upscayl/resources/bin/upscayl-bin /opt/upscayl/resources/bin/upscayl-bin \
+        /snap/upscayl/current/resources/bin/upscayl-bin \
+        $(find /var/lib/flatpak/app/org.upscayl.Upscayl "$HOME/.local/share/flatpak/app/org.upscayl.Upscayl" \
+            -path '*/active/*' -name upscayl-bin -type f 2>/dev/null); do
+        [[ -n $c ]] && is_upscayl "$c" && { realpath "$c"; return; }
+    done
+    return 1
+}
+# Models live beside the binary in every Upscayl layout (bin/ and models/ share a parent)
+find_models() {
+    local d base
+    if [[ -n ${UPSCAYL_MODELS:-} ]]; then echo "$UPSCAYL_MODELS"; return; fi
+    base=$(dirname "$1")
+    for d in "$base/../models" "$base/models" "$base/../resources/models" "$base/../share/upscayl/models" \
+        /usr/share/upscayl/models; do
+        compgen -G "$d/*.param" >/dev/null && { realpath "$d"; return; }
+    done
+    return 1
+}
+UPSCAYL=$(find_upscayl) || UPSCAYL=""
+MODELS=""
+[[ -n $UPSCAYL ]] && MODELS=$(find_models "$UPSCAYL") || true
+
+encoder() { ffmpeg -hide_banner -encoders 2>/dev/null | awk '{ print $2 }' | grep -qx "$1"; }
+declare -A ENCODER=([gif]=gif [mp4]=libx264 [webm]=libvpx-vp9 [avif]=libaom-av1)
+
+check() {
+    local ok=0 f
+    echo "Upscayl binary: ${UPSCAYL:-NOT FOUND (install Upscayl or set UPSCAYL_BIN)}"; [[ -n $UPSCAYL ]] || ok=1
+    echo "Models folder:  ${MODELS:-NOT FOUND (set UPSCAYL_MODELS)}"; [[ -n $MODELS ]] || ok=1
+    [[ -n $MODELS ]] && echo "Models:         $(models | tr '\n' ' ')"
+    for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
+    if have ffmpeg; then
+        echo "ffmpeg:         $(ffmpeg -version | head -1 | cut -d' ' -f3)"
+        for f in gif mp4 webm avif; do
+            if encoder "${ENCODER[$f]}"; then printf '  %-14s yes (%s)\n' "$f output:" "${ENCODER[$f]}"
+            else printf '  %-14s no (ffmpeg lacks %s)\n' "$f output:" "${ENCODER[$f]}"; ok=1; fi
+        done
+    fi
+    echo "Settings window: $(have zenity && echo zenity || echo 'unavailable (install zenity; command-line options still work)')"
+    echo "File picker:     $(have kdialog && echo kdialog || { have zenity && echo zenity || echo unavailable; })"
+    return $ok
+}
+
+pick_file() {
+    local filter="*.gif *.webp *.png *.apng *.avif *.mp4 *.m4v *.webm *.mkv *.mov"
+    if have kdialog; then
+        kdialog --title "Choose an animation or video to upscale" --getopenfilename "$last_dir" "$filter|Animations and videos"
+    else
+        zenity --file-selection --title="Choose an animation or video to upscale" --filename="$last_dir/" \
+            --file-filter="Animations and videos | $filter" --file-filter="All files | *"
+    fi
+}
+models() { ls "$MODELS" | sed -n 's/\.param$//p'; }
+even() { echo $(( ($1 + 1) / 2 * 2 )); }
+human() { numfmt --to=iec --suffix=B "$1"; }
+
+while getopts "m:w:H:f:o:ch" opt; do
+    case $opt in
+        m) model=$OPTARG ;;
+        w) width=$OPTARG ;;
+        H) height=$OPTARG ;;
+        f) format=${OPTARG,,} ;;
+        o) output=$OPTARG ;;
+        c) check; exit ;;
+        h) sed -n '5,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        *) exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+input=${1:-}
+
+for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not installed"; done
+[[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
+[[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
+
+# Remembered choices from the last run
+last_model=upscayl-standard-4x last_format=gif last_dir=$HOME
+[[ -f $CONF ]] && source "$CONF"
+
+# --- Choose file -------------------------------------------------------------------
+if [[ -z $input ]]; then
+    gui || die "no input file given (and no desktop session for a file picker)"
+    [[ -d $last_dir ]] || last_dir=$HOME
+    input=$(pick_file) || exit 0
+fi
+[[ -f $input ]] || die "file not found: $input"
+
+# --- Probe -------------------------------------------------------------------------
+# Use the video stream with the most frames: AVIF files also carry a still image (and
+# alpha) as separate streams, and the animation is the longer one.
+vidx="" aidx="" best=-1
+while IFS='|' read -r idx frames; do
+    [[ $frames =~ ^[0-9]+$ ]] || frames=0
+    if (( frames > best )); then best=$frames vidx=$idx; fi
+done < <(ffprobe -v error -select_streams v -show_entries stream=index,nb_frames -of csv=p=0:s='|' "$input")
+[[ -n $vidx ]] || die "no video found in $(basename "$input")"
+
+# Animated AVIF keeps transparency in a second track with the same frame count
+brand=$(ffprobe -v error -show_entries format_tags=major_brand -of csv=p=0 "$input")
+if [[ $brand == avi[fs] ]] && (( best > 0 )); then
+    aidx=$(ffprobe -v error -select_streams v -show_entries stream=index,nb_frames -of csv=p=0:s='|' "$input" \
+        | awk -F'|' -v v="$vidx" -v n="$best" '$1 > v && $2 == n { print $1; exit }')
+fi
+
+IFS=',' read -r src_w src_h avg_rate < <(ffprobe -v error -select_streams "$vidx" \
+    -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$input")
+fallback=$(awk -v r="$avg_rate" 'BEGIN { split(r, a, "/"); f = (a[2] ? a[1] / a[2] : 0); printf "%.6f", (f > 0 ? 1 / f : 0.1) }')
+
+# Per-frame durations: gap to the next frame's timestamp, else the frame's own
+# duration, else the average frame time. Zero GIF delays play at 0.1 s in browsers.
+mapfile -t durations < <(ffprobe -v error -select_streams "$vidx" \
+    -show_entries frame=best_effort_timestamp_time,duration_time -of compact=p=0 "$input" |
+    awk -F'|' -v fb="$fallback" '
+        { t = d = ""
+          for (i = 1; i <= NF; i++) { split($i, kv, "=")
+              if (kv[1] == "best_effort_timestamp_time") t = kv[2]
+              if (kv[1] == "duration_time") d = kv[2] }
+          ts[NR] = t; du[NR] = d }
+        END { for (i = 1; i <= NR; i++) {
+                  g = (i < NR && ts[i] != "N/A" && ts[i+1] != "N/A") ? ts[i+1] - ts[i] : 0
+                  if (g <= 0) g = (du[i] != "N/A" && du[i] + 0 > 0) ? du[i] : fb
+                  if (g <= 0) g = 0.1
+                  printf "%.6f\n", g } }')
+count=${#durations[@]}
+(( count > 0 )) || die "no frames found in $(basename "$input")"
+total=$(printf '%s\n' "${durations[@]}" | awk '{ s += $1 } END { printf "%.1f", s }')
+fps=$(awk -v n="$count" -v t="$total" 'BEGIN { printf "%.1f", (t > 0 ? n / t : 0) }')
+max_w=$((src_w * 4)) max_h=$((src_h * 4))
+
+# PNG frames compress to roughly half of raw RGBA; original + 4x upscaled copies
+need=$(( count * src_w * src_h * 4 * 17 / 2 ))
+free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
+space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
+
+# --- Settings window (only for what wasn't given on the command line) ----------------
+if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
+    gui || die "missing -m/-f/-w options (and no desktop session for the settings window)"
+
+    model_items=()
+    for m in "$last_model" $(models); do
+        [[ -f $MODELS/$m.param ]] || continue
+        item="$m — ${DESC[$m]:-}"
+        [[ " ${model_items[*]} " == *" $item "* ]] || model_items+=("$item")
+    done
+
+    size_items=()
+    for f in 4 3 2; do
+        size_items+=("$(even $((src_w * f))) × $(even $((src_h * f)))  (${f}×)")
+    done
+    for target in 720 1080 1440 2160; do
+        (( target > src_h && target < max_h )) || continue
+        size_items+=("$(even $((src_w * target / src_h))) × $target  (fits ${target}p)")
+    done
+
+    format_items=()
+    for f in "$last_format" gif webm avif mp4; do
+        encoder "${ENCODER[$f]}" || continue
+        [[ " ${format_items[*]} " == *" $f — "* ]] || format_items+=("$f — ${FMT_DESC[$f]}")
+    done
+
+    warn=""
+    (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
+    (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
+
+    join() { local IFS='|'; echo "$*"; }
+    form=$(zenity --forms --title="Upscale GIF" --width=480 --separator=$'\x1f' \
+        --text="<b>$(basename "$input")</b>\n${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps\n$space_note$warn" \
+        --add-combo="Model" --combo-values="$(join "${model_items[@]}")" \
+        --add-combo="Output size" --combo-values="$(join "${size_items[@]}")" \
+        --add-entry="Custom width (optional, overrides size)" \
+        --add-combo="Format" --combo-values="$(join "${format_items[@]}")") || exit 0
+    IFS=$'\x1f' read -r f_model f_size f_custom f_format <<<"$form"
+
+    [[ -n $model ]] || model=${f_model%% —*}
+    [[ -n $model ]] || model=${model_items[0]%% —*}
+    [[ -n $format ]] || format=${f_format%% —*}
+    [[ -n $format ]] || format=$last_format
+    if [[ -z $width && -z $height ]]; then
+        if [[ -n ${f_custom// /} ]]; then
+            width=${f_custom// /}
+        else
+            [[ -n $f_size ]] || f_size=${size_items[0]}
+            width=${f_size%% ×*}
+        fi
+    fi
+fi
+
+# --- Validate and work out the final size --------------------------------------------
+[[ -f $MODELS/$model.param ]] || die "unknown model '$model'. Available: $(models | tr '\n' ' ')"
+[[ $format =~ ^(gif|mp4|webm|avif)$ ]] || die "unsupported format: $format"
+encoder "${ENCODER[$format]}" || die "this ffmpeg build can't encode $format (missing ${ENCODER[$format]})"
+if [[ -n $width ]]; then
+    [[ $width =~ ^[0-9]+$ ]] && (( width > 0 )) || die "width must be a whole number"
+    out_w=$(even "$width"); out_h=$(even $((width * src_h / src_w)))
+else
+    [[ $height =~ ^[0-9]+$ ]] && (( height > 0 )) || die "height must be a whole number"
+    out_h=$(even "$height"); out_w=$(even $((height * src_w / src_h)))
+fi
+(( need <= free )) || die "not enough space in $WORKROOT: $space_note"
+(( out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's 4× (${max_w}px); the last step will enlarge."
+
+output=${output:-${input%.*}_${out_w}x${out_h}.$format}
+[[ $(realpath -m "$output") != $(realpath "$input") ]] || die "output would overwrite the input"
+
+printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"
+
+echo "Input:  ${src_w}×${src_h}, $count frames, ${total}s, ~$fps fps"
+echo "Output: ${out_w}×${out_h} $format, model $model"
+
+# Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB
+work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+mkdir "$work/frames" "$work/upscaled"
+
+# --- Extract (lossless PNG, every frame, transparency kept) ----------------------------
+echo "Extracting frames..."
+if [[ -n $aidx ]]; then
+    ffmpeg -v error -i "$input" -filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba" \
+        -fps_mode passthrough "$work/frames/%06d.png"
+else
+    ffmpeg -v error -i "$input" -map "0:$vidx" -fps_mode passthrough -pix_fmt rgba "$work/frames/%06d.png"
+fi
+extracted=$(ls "$work/frames" | wc -l)
+if (( extracted != count )); then
+    echo "Note: decoded $extracted frames (probe saw $count); spacing them evenly over ${total}s."
+    d=$(awk -v t="$total" -v n="$extracted" 'BEGIN { printf "%.6f", t / n }')
+    durations=(); for ((i = 0; i < extracted; i++)); do durations+=("$d"); done
+    count=$extracted
+fi
+
+# --- Upscale 4× ----------------------------------------------------------------------
+echo "Upscaling $count frames with $model..."
+"$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "$MODELS" -n "$model" \
+    -z 4 -s 4 -f png >"$work/upscayl.log" 2>&1 \
+    || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
+upscaled=$(ls "$work/upscaled" | wc -l)
+(( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
+
+# --- Reassemble with each frame's original timing ---------------------------------------
+# The concat demuxer ignores the last entry's duration and gives it a fixed 0.04 s, so a
+# longer last frame is split into (delay - 0.04 s) plus an identical 0.04 s copy.
+list=$work/frames.txt
+last=$((count - 1))
+for i in "${!durations[@]}"; do
+    d=${durations[$i]}
+    (( i == last )) && d=$(awk -v d="$d" 'BEGIN { printf "%.6f", (d > 0.045 ? d - 0.04 : 0) }')
+    printf "file '%s'\n" "$work/upscaled/$(printf %06d $((i + 1))).png"
+    [[ $d == 0.000000 ]] || printf "duration %s\n" "$d"
+done >"$list"
+if [[ $(tail -1 "$list") == duration* ]]; then
+    printf "file '%s'\n" "$work/upscaled/$(printf %06d "$count").png" >>"$list"
+fi
+
+echo "Encoding $format..."
+resize="scale=${out_w}:${out_h}:flags=lanczos"
+in=(-v error -stats -y -f concat -safe 0 -i "$list")
+audio=(-i "$input" -map 0:v -map "1:a:0?")
+case $format in
+    gif)
+        ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+            "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
+            -loop 0 "$output" ;;
+    mp4)
+        # H.264 has no alpha: transparent areas become black
+        ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
+            -vf "$resize,format=rgba,premultiply=inplace=1,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 16 -c:a aac -b:a 192k -movflags +faststart "$output" ;;
+    webm)
+        ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
+            -c:v libvpx-vp9 -crf 18 -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k "$output" ;;
+    avif)
+        # AVIF stores transparency as a second AV1 stream
+        ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+            "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]" -map "[c]" -map "[al]" \
+            -c:v libaom-av1 -crf 20 -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p "$output" ;;
+esac
+
+msg="Saved $(basename "$output") ($(du -h "$output" | cut -f1))"
+echo "$msg"
+if [[ ! -t 1 ]] && gui; then notify-send -a "Upscale GIF" -i image-x-generic "$msg" "$(dirname "$output")" || true; fi
