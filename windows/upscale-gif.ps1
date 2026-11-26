@@ -943,7 +943,7 @@ function Invoke-Main {
         if ($need -gt $free) { $warn += "`nNot enough free space in $workRoot." }
         $customHelp = "Custom width: type a width in pixels, e.g. $(Even ($srcW * 3)), to use instead of Output size. " +
             'Height follows the original aspect ratio, and both are rounded to even numbers. ' +
-            "Up to $($srcW * 4) px (the model's 4$x) stays sharp; larger values are stretched. Leave empty to use Output size."
+            "Up to $($srcW * 4) px (4$x the original) stays sharp with 4$x models; beyond a model's scale it's stretched. Leave empty to use Output size."
         # Only ask for what the command line didn't settle
         $fields = @(); $keys = @()
         $askSize = -not $width -and -not $height

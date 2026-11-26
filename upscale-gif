@@ -530,7 +530,7 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     # zenity forms have no tooltips, so the custom-width help is shown in the window text
     custom_help="<small><b>Custom width:</b> type a width in pixels, e.g. <tt>$(even $((src_w * 3)))</tt>, to use instead of <i>Output size</i>.
 Height follows the original aspect ratio, and both are rounded to even numbers.
-Up to <b>$((src_w * 4))</b> px (the model's 4×) stays sharp; larger values are stretched.
+Up to <b>$((src_w * 4))</b> px (4× the original) stays sharp with 4× models; beyond a model's scale it's stretched.
 Leave empty to use <i>Output size</i>.</small>"
 
     join() { local IFS='|'; echo "$*"; }
