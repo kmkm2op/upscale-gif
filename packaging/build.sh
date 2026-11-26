@@ -140,7 +140,7 @@ build_ffmpeg() {
         --enable-libx264 --enable-libvpx --enable-libaom --enable-libopus --enable-libwebp \
         --enable-protocol=file,pipe \
         --enable-demuxers --enable-decoders --enable-parsers --enable-bsfs \
-        --enable-encoder=gif,png,mjpeg,libwebp,libx264,libvpx_vp9,libaom_av1,aac,libopus,wrapped_avframe \
+        --enable-encoder=gif,png,mjpeg,libwebp,libwebp_anim,libx264,libvpx_vp9,libaom_av1,aac,libopus,wrapped_avframe \
         --enable-muxer=gif,mp4,webm,avif,webp,image2,null \
         --enable-filter=$filters \
         && make -s -j"$JOBS" && make -s install) >"$s/ffmpeg.log" 2>&1 || { tail -40 "$s/ffmpeg.log"; exit 1; }

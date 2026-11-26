@@ -6,8 +6,8 @@ its transparency and its audio.
 
   Input:  GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
           video formats
-  Output: GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images (PNG, JPEG, WebP,
-          BMP, TIFF...) also as PNG, JPEG or WebP
+  Output: GIF, animated WebP, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images (PNG,
+          JPEG, WebP, BMP, TIFF...) also as PNG or JPEG
   Quality: one 1-100% setting (default 80%), used by every format except PNG
 
 Everything it needs is included: Upscayl's upscaler, 18 AI models and ffmpeg. Four of the

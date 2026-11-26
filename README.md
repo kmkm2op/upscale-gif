@@ -6,8 +6,8 @@ The output keeps every frame's original timing, its transparency and its audio.
 
 - **Input:** GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
   video formats; also still images (PNG, JPEG, WebP, AVIF, BMP, TIFF)
-- **Output:** GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images also as PNG, JPEG or
-  WebP
+- **Output:** GIF, animated WebP, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images also as
+  PNG or JPEG
 - **Quality:** one 1–100% setting, mapped onto each format's own quality scale
 - **Interface:** command-line options, or a small settings window for anything you leave
   out, so it also works from a desktop launcher or file manager
@@ -27,16 +27,20 @@ The output keeps every frame's original timing, its transparency and its audio.
 | Format | Codec      | Transparency           | Audio |
 |--------|------------|------------------------|-------|
 | gif    | GIF        | yes (1-bit)            | no    |
+| webp   | WebP       | yes                    | no    |
 | webm   | VP9        | yes                    | yes (Opus) |
 | avif   | AV1        | yes                    | no    |
 | mp4    | H.264      | no (becomes black)     | yes (AAC) |
 | png    | PNG        | yes                    | still images only, lossless |
 | jpg    | JPEG       | no (becomes white)     | still images only |
-| webp   | WebP       | yes                    | still images only |
+
+Animated WebP is a good GIF alternative: full colour instead of 256 colours, smooth
+transparency, millisecond timing and much smaller files. All modern browsers show it, but
+some older viewers and upload sites only animate GIFs.
 
 When the input has a single frame (a photo, or a one-frame GIF), the settings window offers
-PNG, JPEG, WebP, AVIF and GIF instead of the video formats, and AVIF is saved as a still
-image. Photos with an EXIF orientation are turned upright.
+PNG, JPEG, WebP, AVIF and GIF instead of the video formats, and WebP and AVIF are saved as
+still images. Photos with an EXIF orientation are turned upright.
 
 **Quality** (`-q`, default 80%) sets how much compression each format uses. 80% gives
 the defaults below; 100% is the best the format offers. It is ignored for PNG, which is
@@ -119,7 +123,7 @@ upscale-gif -h     # help
 | `-m model`  | Upscayl model name, e.g. `digital-art-4x` (see `-c` for the list) |
 | `-w width`  | Output width in pixels; height follows the aspect ratio |
 | `-H height` | Output height in pixels; width follows the aspect ratio |
-| `-f format` | `gif`, `mp4`, `webm`, `avif`, and for single images `png`, `jpg`, `webp`. Can be left out when `-o` ends in one of these |
+| `-f format` | `gif`, `webp`, `mp4`, `webm`, `avif`, and for single images `png`, `jpg`. Can be left out when `-o` ends in one of these |
 | `-q quality`| 1–100 (default 80); ignored for `png` |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |

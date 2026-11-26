@@ -38,8 +38,8 @@ $Title = 'Upscale GIF'
 $Usage = @'
 Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f format] [-q quality%] [-g gpu] [-o output] [file]
        upscale-gif.ps1 -c    (show detected tools, models and GPUs)
-Anything not given on the command line is asked for in a settings window. Formats: gif, mp4,
-webm, avif, and for single images png, jpg, webp. -q: 1-100 (default 80; ignored for png).
+Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
+mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
 Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
 keeps its original timing, and audio is kept for mp4/webm output.
 '@
@@ -83,7 +83,7 @@ $FmtDesc = @{
     png = 'PNG (lossless, keeps transparency)'; jpg = 'JPEG (small, no transparency)'; webp = 'WebP (keeps transparency)'
 }
 $Encoder = @{ gif = 'gif'; mp4 = 'libx264'; webm = 'libvpx-vp9'; avif = 'libaom-av1'; png = 'png'; jpg = 'mjpeg'; webp = 'libwebp' }
-$AnimFormats = 'gif', 'webm', 'avif', 'mp4'
+$AnimFormats = 'gif', 'webp', 'webm', 'avif', 'mp4'
 $ImageFormats = 'png', 'jpg', 'webp', 'avif', 'gif'   # offered when the input is a single image
 $Qualities = 100, 95, 90, 85, 80, 75, 70, 60, 50, 40, 30, 20, 10
 
@@ -698,8 +698,8 @@ function Show-Check {
         $v = (-split ((Lines (Invoke-Tool $script:FFmpeg @('-version') -Capture).Out) | Select-Object -First 1))[2]
         Write-Host "ffmpeg:         $script:FFmpeg ($v)"
         if (-not $script:FFprobe) { Write-Host 'ffprobe:        NOT FOUND (it should be next to ffmpeg)'; $ok = $false }
-        foreach ($f in 'gif', 'mp4', 'webm', 'avif', 'png', 'jpg', 'webp') {
-            $e = $Encoder[$f]
+        foreach ($f in 'gif', 'webp', 'mp4', 'webm', 'avif', 'png', 'jpg') {
+            $e = if ($f -eq 'webp') { 'libwebp_anim' } else { $Encoder[$f] }
             if ($script:Encoders.Contains($e)) { Write-Host ('  {0,-14} yes ({1})' -f "$f output:", $e) }
             else { Write-Host ('  {0,-14} no (ffmpeg lacks {1})' -f "$f output:", $e); $ok = $false }
         }
@@ -708,6 +708,28 @@ function Show-Check {
         $ok = $false
     }
     $ok
+}
+
+# ffmpeg doesn't pass the last frame's length to libwebp, which then uses the average frame
+# length. The delay is a 24-bit millisecond field in the last ANMF chunk, 20 bytes after the
+# chunk's start, so it is set here directly.
+function Set-WebpLastDelay([string]$File, [long]$Ms) {
+    $fs = New-Object IO.FileStream($File, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
+    try {
+        $h = New-Object byte[] 8
+        $off = 12L; $last = -1L
+        while ($off + 8 -le $fs.Length) {
+            [void]$fs.Seek($off, 'Begin')
+            if ($fs.Read($h, 0, 8) -lt 8) { break }
+            $len = [long][BitConverter]::ToUInt32($h, 4)
+            if ([Text.Encoding]::ASCII.GetString($h, 0, 4) -eq 'ANMF') { $last = $off }
+            $off += 8 + $len + ($len -band 1)
+        }
+        if ($last -lt 0) { return }
+        $Ms = [math]::Min($Ms, 16777215)
+        [void]$fs.Seek($last + 20, 'Begin')
+        $fs.Write([byte[]]@(($Ms -band 255), (($Ms -shr 8) -band 255), (($Ms -shr 16) -band 255)), 0, 3)
+    } finally { $fs.Dispose() }
 }
 
 # --- Main --------------------------------------------------------------------------------
@@ -878,6 +900,10 @@ function Invoke-Main {
 
     # A single frame is a still image: it can also be saved as png, jpg or webp
     $still = $count -eq 1
+    if (-not $still) {
+        $Encoder['webp'] = 'libwebp_anim'
+        $FmtDesc['webp'] = 'Animated WebP (full colour, keeps transparency, smaller than GIF)'
+    }
     if ($still) {
         $formats = $ImageFormats
         $inExt = [IO.Path]::GetExtension($inputFile).TrimStart('.').ToLowerInvariant() -replace '^jpeg$', 'jpg'
@@ -987,8 +1013,8 @@ function Invoke-Main {
     if (-not $quality) { $quality = '80' }
     $q = [int]$quality
     if ($format -notmatch '^(gif|mp4|webm|avif|png|jpg|webp)$') { Fail "unsupported format: $format" }
-    if (-not $still -and $format -match '^(png|jpg|webp)$') {
-        Fail "$format output is for single images, and $name has $count frames (use gif, webm, avif or mp4)"
+    if (-not $still -and $format -match '^(png|jpg)$') {
+        Fail "$format output is for single images, and $name has $count frames (use gif, webp, webm, avif or mp4)"
     }
     if (-not $script:Encoders.Contains($Encoder[$format])) { Fail "this ffmpeg build can't encode $format (missing $($Encoder[$format]))" }
     if ($width) {
@@ -1087,7 +1113,7 @@ function Invoke-Main {
             & $frame ($i + 1)
             [void]$sb.Append("duration $(Num $durations[$i])`n")
         }
-        if ($format -ne 'gif') { & $frame $count }
+        if ($format -notmatch '^(gif|webp)$') { & $frame $count }
         $list = Join-Path $work 'frames.txt'
         [IO.File]::WriteAllText($list, $sb.ToString(), (New-Object Text.UTF8Encoding $false))
         $finalDelay = [string][long][math]::Round($durations[$count - 1] * 100, [MidpointRounding]::AwayFromZero)
@@ -1142,12 +1168,20 @@ function Invoke-Main {
                     '-c:v', 'mjpeg', '-q:v', "$qJpeg", '-qmin', '1', '-color_range', 'pc', '-frames:v', '1', '-update', '1', '-f', 'image2', $outFile)
             }
             'webp' {
-                $a = $in + @('-vf', $resize, '-c:v', 'libwebp') + $webpOpts + @('-frames:v', '1', '-f', 'webp', $outFile)
+                if ($still) {
+                    $a = $in + @('-vf', $resize, '-c:v', 'libwebp') + $webpOpts + @('-frames:v', '1', '-f', 'webp', $outFile)
+                } else {
+                    $pix = if ($q -lt 100) { 'yuva420p' } else { 'bgra' }
+                    $a = $in + @('-fps_mode', 'vfr', '-vf', $resize, '-pix_fmt', $pix, '-c:v', 'libwebp_anim') + $webpOpts + @('-loop', '0', '-f', 'webp', $outFile)
+                }
             }
         }
         # GIF output only appears at the end (the palette needs every frame first)
         $w = New-Watch 85 100 "Encoding $format, frame {0} of {1}" $count -ProgressFile $progressFile -Eta 'eta-started'
         if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail "ffmpeg could not encode $format" }
+        if ($format -eq 'webp' -and -not $still) {
+            Set-WebpLastDelay $outFile ([long][math]::Round($durations[$count - 1] * 1000, [MidpointRounding]::AwayFromZero))
+        }
     } finally {
         Close-Progress
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

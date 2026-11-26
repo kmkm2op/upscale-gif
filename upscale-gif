@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Upscale an animation, video or image (gif, mp4, webm, avif, webp, apng, mkv, mov, png, jpg...)
-# with Upscayl and save it as gif, mp4, webm or avif (images also as png, jpg or webp).
+# with Upscayl and save it as gif, webp, mp4, webm or avif (images also as png or jpg).
 #
 # Usage: upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality%] [-g gpu] [-o output] [input]
 #        upscale-gif -c    (show detected tools, models and GPUs)
-# Anything not given on the command line is asked for in a settings window. Formats: gif, mp4,
-# webm, avif, and for single images png, jpg, webp. -q: 1-100 (default 80; ignored for png).
+# Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
+# mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
 # Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
 # keeps its original timing, and audio is kept for mp4/webm output.
 #
@@ -69,7 +69,7 @@ declare -A FMT_DESC=(
     [png]="PNG (lossless, keeps transparency)" [jpg]="JPEG (small, no transparency)"
     [webp]="WebP (keeps transparency)"
 )
-ANIM_FORMATS=(gif webm avif mp4)
+ANIM_FORMATS=(gif webp webm avif mp4)
 IMAGE_FORMATS=(png jpg webp avif gif)   # offered when the input is a single image
 QUALITIES=(100 95 90 85 80 75 70 60 50 40 30 20 10)
 
@@ -320,7 +320,8 @@ check() {
     for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
     if have ffmpeg; then
         echo "ffmpeg:         $(command -v ffmpeg) ($(ffmpeg -version | head -1 | cut -d' ' -f3))"
-        for f in gif mp4 webm avif png jpg webp; do
+        for f in gif webp mp4 webm avif png jpg; do
+            [[ $f != webp ]] || ENCODER[webp]=libwebp_anim
             if encoder "${ENCODER[$f]}"; then printf '  %-14s yes (%s)\n' "$f output:" "${ENCODER[$f]}"
             else printf '  %-14s no (ffmpeg lacks %s)\n' "$f output:" "${ENCODER[$f]}"; ok=1; fi
         done
@@ -461,8 +462,12 @@ mkdir -p "$WORKROOT" || die "can't create $WORKROOT"
 free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 
-# A single frame is a still image: it can also be saved as png, jpg or webp
+# A single frame is a still image: it can also be saved as png or jpg
 still=0; (( count == 1 )) && still=1
+if (( ! still )); then
+    ENCODER[webp]=libwebp_anim
+    FMT_DESC[webp]="Animated WebP (full colour, keeps transparency, smaller than GIF)"
+fi
 if (( still )); then
     formats=("${IMAGE_FORMATS[@]}")
     in_ext=${input##*.}; in_ext=${in_ext,,}; [[ $in_ext != jpeg ]] || in_ext=jpg
@@ -591,8 +596,8 @@ scale=$(model_scale "$model")
 max_w=$((src_w * scale)) need=$(space_for "$scale")
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 [[ $format =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]] || die "unsupported format: $format"
-[[ $still == 1 || ! $format =~ ^(png|jpg|webp)$ ]] \
-    || die "$format output is for single images, and $(basename "$input") has $count frames (use gif, webm, avif or mp4)"
+[[ $still == 1 || ! $format =~ ^(png|jpg)$ ]] \
+    || die "$format output is for single images, and $(basename "$input") has $count frames (use gif, webp, webm, avif or mp4)"
 encoder "${ENCODER[$format]}" || die "this ffmpeg build can't encode $format (missing ${ENCODER[$format]})"
 if [[ -n $width ]]; then
     [[ $width =~ ^[0-9]+$ ]] && (( width > 0 )) || die "width must be a whole number"
@@ -762,8 +767,27 @@ frame() {
 for i in "${!durations[@]}"; do
     frame $((i + 1)); printf "duration %s\n" "${durations[$i]}"
 done >"$list"
-[[ $format == gif ]] || frame "$count" >>"$list"
+[[ $format =~ ^(gif|webp)$ ]] || frame "$count" >>"$list"
 final_delay=$(awk -v d="${durations[count - 1]}" 'BEGIN { printf "%d", d * 100 + 0.5 }')
+final_delay_ms=$(awk -v d="${durations[count - 1]}" 'BEGIN { printf "%d", d * 1000 + 0.5 }')
+
+# ffmpeg doesn't pass the last frame's length to libwebp, which then uses the average frame
+# length. The delay is a 24-bit millisecond field in the last ANMF chunk, 20 bytes after
+# the chunk's start, so it is set here directly.
+webp_last_delay() {   # webp_last_delay FILE MS
+    local f=$1 ms=$2 size off=12 last="" h len
+    size=$(stat -c %s "$f")
+    while (( off + 8 <= size )); do
+        read -ra h < <(od -An -tu1 -j "$off" -N 8 "$f")
+        len=$(( h[4] | h[5] << 8 | h[6] << 16 | h[7] << 24 ))
+        (( h[0] == 65 && h[1] == 78 && h[2] == 77 && h[3] == 70 )) && last=$off   # "ANMF"
+        off=$(( off + 8 + len + (len & 1) ))
+    done
+    [[ -n $last ]] || return 0
+    (( ms <= 16777215 )) || ms=16777215
+    printf "$(printf '\\x%02x\\x%02x\\x%02x' $((ms & 255)) $((ms >> 8 & 255)) $((ms >> 16 & 255)))" \
+        | dd of="$f" bs=1 seek=$((last + 20)) conv=notrunc status=none
+}
 
 say "Encoding $format..."
 resize="scale=${out_w}:${out_h}:flags=lanczos,setsar=1"
@@ -818,7 +842,14 @@ case $format in
             "color=white:s=${out_w}x${out_h},format=rgb24[bg];[0:v]$resize[fg];[bg][fg]overlay=shortest=1:format=auto,scale=out_range=full,format=yuv444p" \
             -c:v mjpeg -q:v "$q_jpeg" -qmin 1 -color_range pc -frames:v 1 -update 1 -f image2 "$output" ;;
     webp)
-        encode ffmpeg "${in[@]}" -vf "$resize" -c:v libwebp "${webp_opts[@]}" -frames:v 1 -f webp "$output" ;;
+        if (( still )); then
+            encode ffmpeg "${in[@]}" -vf "$resize" -c:v libwebp "${webp_opts[@]}" -frames:v 1 -f webp "$output"
+        else
+            pix=yuva420p; (( quality < 100 )) || pix=bgra
+            encode ffmpeg "${in[@]}" -fps_mode vfr -vf "$resize" -pix_fmt "$pix" -c:v libwebp_anim "${webp_opts[@]}" \
+                -loop 0 -f webp "$output"
+            webp_last_delay "$output" "$final_delay_ms"
+        fi ;;
 esac
 
 progress_finish
