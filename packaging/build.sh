@@ -27,17 +27,17 @@ X264=x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55
 log() { printf '\n==> %s\n' "$*" >&2; }
 
 # --- Downloads ------------------------------------------------------------------------
-mkdir -p "$DL" "$DIST"
-while read -r name sum url; do
+mkdir -p "$DL/models" "$DIST"
+while read -r name sum url dir; do
     [[ -z $name || $name == \#* ]] && continue
-    f=$DL/$name
+    f=$DL/$dir$name
     if [[ ! -s $f ]] || ! echo "$sum  $f" | sha256sum -c --status; then
         log "Downloading $name"
         curl -fL --retry 3 -o "$f.part" "$url"
         mv "$f.part" "$f"
     fi
     echo "$sum  $f" | sha256sum -c --quiet || { echo "checksum mismatch: $name" >&2; exit 1; }
-done <"$HERE/sources.txt"
+done < <(cat "$HERE/sources.txt"; sed '/^#/d; /^$/d; s|$|  models/|' "$HERE/models.txt")
 
 unpack() {   # unpack ARCHIVE DIR: extract into a fresh DIR, dropping the top-level folder
     rm -rf "$2"; mkdir -p "$2"
@@ -60,8 +60,9 @@ export PATH=$TOOLS/bin:$PATH
 # build_ffmpeg TARGET: builds x264, libvpx, libaom, opus and ffmpeg into $CACHE/TARGET/prefix
 build_ffmpeg() {
     local t=$1 p=$CACHE/$1/prefix s=$CACHE/$1/src stamp
-    # Rebuild when the sources or this function change
-    stamp=$( { cat "$HERE/sources.txt"; declare -f build_ffmpeg; } | sha256sum | cut -c1-16)
+    # Rebuild when its sources or this function change
+    stamp=$( { grep -E '^(nasm|zlib|x264|opus|libvpx|libaom|ffmpeg|llvm-mingw)-' "$HERE/sources.txt"; declare -f build_ffmpeg; } \
+        | sha256sum | cut -c1-16)
     [[ $(cat "$CACHE/$t/stamp" 2>/dev/null) == "$stamp" ]] && return 0
     rm -rf "$CACHE/$t"; mkdir -p "$p" "$s"
 
@@ -141,19 +142,10 @@ build_ffmpeg() {
 }
 
 # --- Packages -----------------------------------------------------------------------------
-# Models: all BSD-3-Clause (Real-ESRGAN, by Xintao Wang)
+# Models: everything in models.txt (licenses in THIRD-PARTY-NOTICES.md)
 add_models() {
-    local d=$1 z
-    mkdir -p "$d"
-    z=$DL/realesrgan-ncnn-vulkan-ubuntu.zip
-    python3 - "$z" "$d" <<'PY'
-import sys, zipfile, os
-z = zipfile.ZipFile(sys.argv[1])
-for n in z.namelist():
-    if n.startswith("models/") and not n.endswith("/"):
-        open(os.path.join(sys.argv[2], os.path.basename(n)), "wb").write(z.read(n))
-PY
-    cp "$DL/RealESRGAN_General_x4_v3.param" "$DL/RealESRGAN_General_x4_v3.bin" "$d/"
+    mkdir -p "$1"
+    sed '/^#/d; /^$/d' "$HERE/models.txt" | while read -r name _; do cp "$DL/models/$name" "$1/"; done
 }
 
 add_common() {   # add_common DIR TARGET: licenses, notices and the icon
@@ -170,6 +162,9 @@ add_common() {   # add_common DIR TARGET: licenses, notices and the icon
     python3 -m zipfile -e "$DL/upscayl-bin-linux.zip" "$CACHE/upscayl-lic"
     cp "$CACHE"/upscayl-lic/*/LICENSE "$l/upscayl-ncnn-AGPL-3.0.txt"; rm -rf "$CACHE/upscayl-lic"
     cp "$DL/Real-ESRGAN-LICENSE" "$l/Real-ESRGAN-models-BSD-3-Clause.txt"
+    cp "$DL/CC-BY-4.0.txt" "$l/models-CC-BY-4.0.txt"
+    cp "$DL/CC-BY-NC-SA-4.0.txt" "$l/models-CC-BY-NC-SA-4.0.txt"
+    cp "$DL/WTFPL.txt" "$l/models-WTFPL.txt"
     sed "s/@VERSION@/$VERSION/g" "$HERE/THIRD-PARTY-NOTICES.md" >"$d/THIRD-PARTY-NOTICES.md"
 }
 
@@ -227,7 +222,7 @@ package_sources() {
     log "Packaging $name"
     cp "$DL/ffmpeg-9.1.tar.xz" "$DL/$X264.tar.bz2" "$DL/libvpx-1.17.0.tar.gz" "$DL/libaom-3.15.3.tar.gz" \
         "$DL/opus-1.6.1.tar.gz" "$DL/zlib-1.4.tar.gz" "$DL/upscayl-ncnn-20251207-174704.tar.gz" "$d/"
-    mkdir -p "$d/packaging"; cp -r "$HERE/sources.txt" "$HERE/build.sh" "$d/packaging/"
+    mkdir -p "$d/packaging"; cp "$HERE/sources.txt" "$HERE/models.txt" "$HERE/build.sh" "$d/packaging/"
     cat >"$d/README.txt" <<EOF
 Source code of the GPL and AGPL programs bundled with upscale-gif $VERSION:
 

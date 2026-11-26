@@ -8,7 +8,8 @@ its transparency and its audio.
           video formats
   Output: GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1)
 
-Everything it needs is included: Upscayl's upscaler, AI models and ffmpeg.
+Everything it needs is included: Upscayl's upscaler, 18 AI models and ffmpeg. Four of the
+models (marked in the list) are for non-commercial use only; see THIRD-PARTY-NOTICES.
 
 
 What you need

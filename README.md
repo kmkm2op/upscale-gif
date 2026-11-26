@@ -129,18 +129,32 @@ just enlarges the image.
 
 ## Models
 
-The packages include these models (all BSD-3-Clause, from
-[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)):
+The packages include Upscayl's built-in models and its
+[custom models](https://github.com/upscayl/custom-models) collection, 18 in all:
 
-| Model | Good for |
-|---|---|
-| `realesrgan-x4plus` | General purpose, best quality (the default) |
-| `RealESRGAN_General_x4_v3` | General purpose, fast |
-| `realesrgan-x4plus-anime` | Digital art, anime, cartoons |
-| `realesr-animevideov3-x4`, `-x3`, `-x2` | Anime and cartoon video, fastest |
+| Model | Good for | License |
+|---|---|---|
+| `upscayl-standard-4x` | General purpose (the default) | BSD-3-Clause |
+| `upscayl-lite-4x` | General purpose, faster | BSD-3-Clause |
+| `digital-art-4x` | Digital art, anime, cartoons | BSD-3-Clause |
+| `high-fidelity-4x` | Photos, keeps fine detail | CC BY 4.0 |
+| `realesr-animevideov3-x4`, `-x3`, `-x2` | Anime and cartoon video, fastest | BSD-3-Clause |
+| `RealESRGAN_General_WDN_x4_v3` | General purpose, fast, less smoothing | BSD-3-Clause |
+| `4x_NMKD-Siax_200k` | General purpose, clean or lightly compressed | WTFPL |
+| `4xLSDIR` | Photos, clean sources | CC BY 4.0 |
+| `4xLSDIRplusC`, `4xLSDIRCompactC3` | Photos with JPEG artifacts (C3 is faster) | CC BY 4.0 |
+| `4xNomos8kSC` | Photos with JPEG artifacts or blur | CC BY 4.0 |
+| `4x_NMKD-Superscale-SP_178000_G` | Photos with noise and artifacts | WTFPL |
+| `remacri-4x` | Natural and sharp | CC BY-NC-SA 4.0 |
+| `ultrasharp-4x` | Very sharp | CC BY-NC-SA 4.0 |
+| `ultramix-balanced-4x` | Balance of sharp and smooth | CC BY-NC-SA 4.0 |
+| `uniscale_restore` | Heavily compressed or noisy images | CC BY-NC-SA 4.0 |
 
-If the Upscayl app is installed too, its own models (and its custom models, below) are
-added to the list.
+The four CC BY-NC-SA models may only be used for non-commercial purposes; the model list
+marks them. Authors and details are in
+[packaging/THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md).
+
+Models in the custom models folder set in the Upscayl app (below) are added to the list.
 
 ## Finding Upscayl
 
@@ -196,6 +210,7 @@ The GPU is chosen by `-g`, else by Upscayl's **GPU ID** setting, else automatica
 upscale-gif is [MIT](LICENSE)-licensed. The release packages also contain programs and
 models with their own licenses, listed in
 [packaging/THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md): Upscayl's upscaler
-(AGPL-3.0), ffmpeg with x264 (GPL-2.0-or-later), and the Real-ESRGAN models (BSD-3-Clause).
+(AGPL-3.0), ffmpeg with x264 (GPL-2.0-or-later), and the models (BSD-3-Clause, CC BY 4.0,
+WTFPL, and CC BY-NC-SA 4.0 for four models that are for non-commercial use only).
 They are separate programs that upscale-gif runs, so they don't change the license of
 upscale-gif itself. Their source code is published with each release.

@@ -3,11 +3,11 @@
 upscayl-bin-linux.zip  a9fab3c770b62f2b7a35d8d6d61eb4e8b3aef79128b665c919d080b85a2292f2  https://github.com/upscayl/upscayl-ncnn/releases/download/20251207-174704/upscayl-bin-20251207-174704-linux.zip
 upscayl-bin-windows.zip  1f0f65c5d2ade866555e2ac467d35952c35a47080a4060fe56a1ab028f67258a  https://github.com/upscayl/upscayl-ncnn/releases/download/20251207-174704/upscayl-bin-20251207-174704-windows.zip
 upscayl-ncnn-20251207-174704.tar.gz  a795c6b8950e7e88434f07ae352182b2bf38f229894b61d8196ac985758115fe  https://github.com/upscayl/upscayl-ncnn/archive/refs/tags/20251207-174704.tar.gz
-realesrgan-ncnn-vulkan-ubuntu.zip  e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96  https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
 realesrgan-ncnn-vulkan-windows.zip  abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d  https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip
-RealESRGAN_General_x4_v3.param  22174924330297357434ad21ed0af7f4b820008d2a502b492754d130d4142714  https://raw.githubusercontent.com/upscayl/custom-models/4b6d2cfa59c7442af115dfc6e50fd8d7d40b96ef/models/RealESRGAN_General_x4_v3.param
-RealESRGAN_General_x4_v3.bin  85ee266b632a765a725425ba6a5620c088c8aa2939a03063b2d83b3462724cc1  https://raw.githubusercontent.com/upscayl/custom-models/4b6d2cfa59c7442af115dfc6e50fd8d7d40b96ef/models/RealESRGAN_General_x4_v3.bin
 Real-ESRGAN-LICENSE  4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2  https://raw.githubusercontent.com/xinntao/Real-ESRGAN/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE
+CC-BY-4.0.txt  9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411  https://creativecommons.org/licenses/by/4.0/legalcode.txt
+CC-BY-NC-SA-4.0.txt  e66c269d4819aaab34b49ef5220c4ddab6756f21bb5180761a4eb8561f2b7bbd  https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt
+WTFPL.txt  0356258391e190dc1d44ea01565cfe627fe44e27dad693a0a54c2483a7b223e5  https://www.wtfpl.net/txt/copying/
 nasm-2.16.03.tar.xz  1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148  https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
 x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2  6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224  https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
 libvpx-1.17.0.tar.gz  1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a  https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz

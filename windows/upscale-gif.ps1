@@ -43,23 +43,36 @@ Every frame keeps its original timing; audio is kept for mp4/webm output.
 '@
 
 $Desc = @{
-    'upscayl-standard-4x'  = 'General purpose'
-    'upscayl-lite-4x'      = 'General purpose, faster'
-    'digital-art-4x'       = 'Digital art, anime, cartoons'
-    'high-fidelity-4x'     = 'Photos, keeps fine detail'
-    'remacri-4x'           = 'Natural and sharp'
-    'ultrasharp-4x'        = 'Very sharp'
-    'ultramix-balanced-4x' = 'Balance of sharp and smooth'
-    'realesrgan-x4plus' = 'General purpose, best quality'
-    'RealESRGAN_General_x4_v3' = 'General purpose, fast'
-    'realesrgan-x4plus-anime' = 'Digital art, anime, cartoons'
+    'upscayl-standard-4x' = 'General purpose'
+    'upscayl-lite-4x' = 'General purpose, faster'
+    'digital-art-4x' = 'Digital art, anime, cartoons'
+    'high-fidelity-4x' = 'Photos, keeps fine detail'
     'realesr-animevideov3-x4' = 'Anime and cartoon video, fastest'
     'realesr-animevideov3-x3' = 'Anime and cartoon video, fastest, 3x'
     'realesr-animevideov3-x2' = 'Anime and cartoon video, fastest, 2x'
+    'RealESRGAN_General_WDN_x4_v3' = 'General purpose, fast, less smoothing'
+    '4x_NMKD-Siax_200k' = 'General purpose, clean or lightly compressed'
+    '4xLSDIR' = 'Photos, clean sources'
+    '4xLSDIRplusC' = 'Photos with JPEG artifacts'
+    '4xLSDIRCompactC3' = 'Photos with JPEG artifacts, fast'
+    '4xNomos8kSC' = 'Photos with JPEG artifacts or blur'
+    '4x_NMKD-Superscale-SP_178000_G' = 'Photos with noise and artifacts'
+    'remacri-4x' = 'Natural and sharp (non-commercial use only)'
+    'ultrasharp-4x' = 'Very sharp (non-commercial use only)'
+    'ultramix-balanced-4x' = 'Balance of sharp and smooth (non-commercial use only)'
+    'uniscale_restore' = 'Heavily compressed or noisy images (non-commercial use only)'
+    'realesrgan-x4plus' = 'General purpose'
+    'RealESRGAN_General_x4_v3' = 'General purpose, faster'
+    'realesrgan-x4plus-anime' = 'Digital art, anime, cartoons'
+    '4xHFA2k' = 'Photos, keeps fine detail'
 }
 # Order of the model list, and the default (the first one available)
-$ModelOrder = 'upscayl-standard-4x', 'realesrgan-x4plus', 'RealESRGAN_General_x4_v3', 'upscayl-lite-4x', 'digital-art-4x',
-    'realesrgan-x4plus-anime', 'realesr-animevideov3-x4', 'realesr-animevideov3-x3', 'realesr-animevideov3-x2'
+$ModelOrder = 'upscayl-standard-4x', 'upscayl-lite-4x', 'digital-art-4x', 'high-fidelity-4x',
+    'realesr-animevideov3-x4', 'realesr-animevideov3-x3', 'realesr-animevideov3-x2',
+    'RealESRGAN_General_WDN_x4_v3', '4x_NMKD-Siax_200k', '4xLSDIR', '4xLSDIRplusC',
+    '4xLSDIRCompactC3', '4xNomos8kSC', '4x_NMKD-Superscale-SP_178000_G', 'remacri-4x',
+    'ultrasharp-4x', 'ultramix-balanced-4x', 'uniscale_restore', 'realesrgan-x4plus',
+    'RealESRGAN_General_x4_v3', 'realesrgan-x4plus-anime', '4xHFA2k'
 # Release packages carry upscayl-bin, ffmpeg and ffprobe in bin\ and the models in models\
 $BundleBin = Join-Path $PSScriptRoot 'bin'
 $FmtDesc = @{

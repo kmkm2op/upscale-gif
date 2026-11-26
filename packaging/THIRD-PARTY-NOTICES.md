@@ -36,11 +36,33 @@ release.
 
 ## Models (in `models`)
 
-| Model | License | Author |
-|---|---|---|
-| realesrgan-x4plus | BSD-3-Clause | Xintao Wang (Real-ESRGAN) |
-| realesrgan-x4plus-anime | BSD-3-Clause | Xintao Wang (Real-ESRGAN) |
-| realesr-animevideov3-x2, -x3, -x4 | BSD-3-Clause | Xintao Wang (Real-ESRGAN) |
-| RealESRGAN_General_x4_v3 | BSD-3-Clause | Xintao Wang (Real-ESRGAN); ncnn conversion from upscayl/custom-models |
+The models are in ncnn format, as converted and distributed by the Upscayl project
+(https://github.com/upscayl/upscayl and https://github.com/upscayl/custom-models). They are
+unmodified otherwise. License texts: `licenses/models-*.txt` and
+`licenses/Real-ESRGAN-models-BSD-3-Clause.txt`.
 
-Real-ESRGAN: https://github.com/xinntao/Real-ESRGAN
+| File name | Model | Author | License |
+|---|---|---|---|
+| upscayl-standard-4x | RealESRGAN_x4plus | Xintao Wang (Real-ESRGAN) | BSD-3-Clause |
+| upscayl-lite-4x | realesr-general-x4v3 | Xintao Wang (Real-ESRGAN) | BSD-3-Clause |
+| digital-art-4x | RealESRGAN_x4plus_anime_6B | Xintao Wang (Real-ESRGAN) | BSD-3-Clause |
+| RealESRGAN_General_WDN_x4_v3 | realesr-general-wdn-x4v3 | Xintao Wang (Real-ESRGAN) | BSD-3-Clause |
+| realesr-animevideov3-x2, -x3, -x4 | realesr-animevideov3 | Xintao Wang (Real-ESRGAN) | BSD-3-Clause |
+| high-fidelity-4x | 4xHFA2k | Philip Hofmann (Helaman) | CC BY 4.0 |
+| 4xLSDIR | 4xLSDIR | Philip Hofmann (Helaman) | CC BY 4.0 |
+| 4xLSDIRCompactC3 | 4xLSDIRCompactC3 | Philip Hofmann (Helaman) | CC BY 4.0 |
+| 4xLSDIRplusC | 4xLSDIRplusC | Philip Hofmann (Helaman) | CC BY 4.0 |
+| 4xNomos8kSC | 4xNomos8kSC | Philip Hofmann (Helaman) | CC BY 4.0 |
+| 4x_NMKD-Siax_200k | 4x-NMKD-Siax-CX | Nmkd | WTFPL |
+| 4x_NMKD-Superscale-SP_178000_G | 4x-NMKD-Superscale | Nmkd | WTFPL |
+| ultrasharp-4x | 4x-UltraSharp | Kim2091 | CC BY-NC-SA 4.0 |
+| ultramix-balanced-4x | 4x-UltraMix_Balanced | Kim2091 | CC BY-NC-SA 4.0 |
+| uniscale_restore | 4x-UniScale_Restore | Kim2091 | CC BY-NC-SA 4.0 |
+| remacri-4x | 4x-Remacri | Foolhardy | CC BY-NC-SA 4.0 |
+
+Model pages: https://openmodeldb.info and https://github.com/xinntao/Real-ESRGAN
+
+**Non-commercial models:** ultrasharp-4x, ultramix-balanced-4x, uniscale_restore and
+remacri-4x are licensed CC BY-NC-SA 4.0. They may only be used and shared for
+non-commercial purposes, and shared copies must keep the same license. Use one of the
+other models for commercial work.
