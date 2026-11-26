@@ -93,6 +93,9 @@ Anything you don't give on the command line is asked for:
 
 The last model, format and folder you used are saved in `~/.config/upscale-gif.conf`.
 
+While it runs, a progress bar shows the current step and the time left: in the terminal, or
+in a window with a Cancel button when started without one (e.g. from a desktop shortcut).
+
 Examples:
 
 ```sh

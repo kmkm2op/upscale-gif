@@ -79,9 +79,10 @@ function Format-Arg([string]$A) {
     '"' + ($A -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 # Run a program. -Capture returns its output; -Log saves it to a file; otherwise it
-# writes straight to the console (ffmpeg's progress line).
+# writes straight to the console. -Watch (see New-Watch) updates the progress while it
+# runs, and stops it when Cancel is pressed.
 function Invoke-Tool {
-    param([string]$Exe, [string[]]$Arguments, [switch]$Capture, [string]$Log, [int]$TimeoutSec = 0)
+    param([string]$Exe, [string[]]$Arguments, [switch]$Capture, [string]$Log, [int]$TimeoutSec = 0, [hashtable]$Watch)
     $psi = New-Object Diagnostics.ProcessStartInfo $Exe
     $psi.Arguments = ($Arguments | ForEach-Object { Format-Arg $_ }) -join ' '
     $psi.UseShellExecute = $false
@@ -96,8 +97,22 @@ function Invoke-Tool {
         $errTask = $p.StandardError.ReadToEndAsync()
         $outTask = $p.StandardOutput.ReadToEndAsync()
     }
-    $ms = if ($TimeoutSec -gt 0) { $TimeoutSec * 1000 } else { -1 }
-    if (-not $p.WaitForExit($ms)) { try { $p.Kill() } catch { }; $p.WaitForExit() }
+    if ($Watch) {
+        $next = [DateTime]::MinValue
+        try {
+            while (-not $p.WaitForExit(100)) {
+                if ($script:ProgressWindow) { [Windows.Forms.Application]::DoEvents() }
+                if ($script:Cancelled) { Fail 'cancelled' }
+                if ([DateTime]::UtcNow -ge $next) { Update-Watch $Watch; $next = [DateTime]::UtcNow.AddMilliseconds(500) }
+            }
+        } finally {
+            if (-not $p.HasExited) { try { $p.Kill() } catch { }; $p.WaitForExit() }
+        }
+        $p.WaitForExit()
+    } else {
+        $ms = if ($TimeoutSec -gt 0) { $TimeoutSec * 1000 } else { -1 }
+        if (-not $p.WaitForExit($ms)) { try { $p.Kill() } catch { }; $p.WaitForExit() }
+    }
     if ($redirect) { $out = $outTask.Result; $err = $errTask.Result }
     if ($Log) { [IO.File]::WriteAllText($Log, $out + $err) }
     New-Object PSObject -Property @{ Code = $p.ExitCode; Out = $out; Err = $err }
@@ -190,6 +205,89 @@ function Show-Settings([string]$Info, [object[]]$Fields) {
         }
         return , $answers.ToArray()
     } finally { $form.Dispose() }
+}
+
+# --- Progress ----------------------------------------------------------------------------
+# Upscayl only reports progress per image, so progress comes from counting finished frames.
+# It is shown in a window with a Cancel button when started from the shortcuts (-Dialogs),
+# and with PowerShell's progress bar otherwise.
+$script:ProgressWindow = $null
+$script:Cancelled = $false
+$script:ProgressShown = ''
+$script:UpClock = $null
+function Open-ProgressWindow([string]$Name) {
+    Use-Forms
+    $f = New-Object Windows.Forms.Form
+    $f.Text = $Title; $f.FormBorderStyle = 'FixedDialog'; $f.StartPosition = 'CenterScreen'
+    $f.MaximizeBox = $false; $f.MinimizeBox = $true; $f.ClientSize = New-Object Drawing.Size(440, 132)
+    $f.Font = New-Object Drawing.Font('Segoe UI', 9)
+    $file = New-Object Windows.Forms.Label
+    $file.Text = $Name; $file.AutoEllipsis = $true; $file.UseMnemonic = $false
+    $file.Location = New-Object Drawing.Point(12, 12); $file.Size = New-Object Drawing.Size(416, 18)
+    $status = New-Object Windows.Forms.Label
+    $status.Text = 'Starting...'; $status.UseMnemonic = $false
+    $status.Location = New-Object Drawing.Point(12, 34); $status.Size = New-Object Drawing.Size(416, 18)
+    $bar = New-Object Windows.Forms.ProgressBar
+    $bar.Location = New-Object Drawing.Point(12, 58); $bar.Size = New-Object Drawing.Size(416, 22); $bar.Maximum = 100
+    $cancel = New-Object Windows.Forms.Button
+    $cancel.Text = 'Cancel'; $cancel.Location = New-Object Drawing.Point(353, 94)
+    $cancel.Add_Click({ $script:Cancelled = $true })
+    # Closing the window also cancels, unless the script closes it
+    $f.Add_FormClosing({ param($s, $e) if (-not $script:ProgressWindow.Done) { $script:Cancelled = $true; $e.Cancel = $true } })
+    $f.Controls.AddRange(@($file, $status, $bar, $cancel))
+    $script:ProgressWindow = @{ Form = $f; Bar = $bar; Status = $status; Done = $false }
+    $f.Show(); [Windows.Forms.Application]::DoEvents()
+}
+function Close-Progress {
+    if ($script:ProgressWindow) {
+        $script:ProgressWindow.Done = $true
+        $script:ProgressWindow.Form.Close(); $script:ProgressWindow.Form.Dispose()
+        $script:ProgressWindow = $null
+    } else {
+        Write-Progress -Activity $Title -Completed
+    }
+}
+function Format-Time([long]$Sec) {
+    if ($Sec -ge 3600) { return '{0}:{1:D2}:{2:D2}' -f [long][math]::Floor($Sec / 3600), [long]([math]::Floor($Sec / 60) % 60), ($Sec % 60) }
+    '{0}:{1:D2}' -f [long][math]::Floor($Sec / 60), ($Sec % 60)
+}
+# $Eta estimates the time left from the upscaling speed (it starts at 3% and takes most of the time)
+function Show-Progress([int]$Percent, [string]$Text, [bool]$Eta) {
+    if ($Percent -gt 99) { $Percent = 99 }
+    $left = ''
+    if ($Eta -and $script:UpClock -and $Percent -gt 4 -and $script:UpClock.Elapsed.TotalSeconds -ge 3) {
+        $left = 'about ' + (Format-Time ([long]($script:UpClock.Elapsed.TotalSeconds * (100 - $Percent) / ($Percent - 3)) + 1)) + ' left'
+    }
+    $key = "$Percent $Text $left"
+    if ($key -eq $script:ProgressShown) { return }
+    $script:ProgressShown = $key
+    if ($script:ProgressWindow) {
+        $script:ProgressWindow.Bar.Value = $Percent
+        $script:ProgressWindow.Status.Text = $(if ($left) { "$Text - $left" } else { $Text })
+        [Windows.Forms.Application]::DoEvents()
+    } else {
+        Write-Progress -Activity $Title -Status $(if ($left) { "$Text, $left" } else { $Text }) -PercentComplete $Percent
+    }
+}
+# Maps a count of finished frames (files in Dir, or ffmpeg's frame= lines in ProgressFile)
+# onto From..To percent. Eta: 'eta', 'eta-started' (once the count moves) or ''.
+function New-Watch([int]$From, [int]$To, [string]$Text, [long]$Total, [string]$Dir, [string]$ProgressFile, [string]$Eta = '') {
+    @{ From = $From; To = $To; Text = $Text; Total = [math]::Max($Total, 1); Dir = $Dir; ProgressFile = $ProgressFile; Eta = $Eta }
+}
+function Update-Watch([hashtable]$W) {
+    $n = 0L
+    try {
+        if ($W.Dir) { $n = @([IO.Directory]::GetFiles($W.Dir)).Count }
+        elseif (Test-Path -LiteralPath $W.ProgressFile) {
+            $fs = New-Object IO.FileStream($W.ProgressFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $sr = New-Object IO.StreamReader($fs)
+            try { $m = [regex]::Matches($sr.ReadToEnd(), '(?m)^frame=(\d+)') } finally { $sr.Dispose() }
+            if ($m.Count) { $n = [long]$m[$m.Count - 1].Groups[1].Value }
+        }
+    } catch { }
+    if ($n -gt $W.Total) { $n = $W.Total }
+    $eta = $W.Eta -eq 'eta' -or ($W.Eta -eq 'eta-started' -and $n -gt 0)
+    Show-Progress ([int]($W.From + ($W.To - $W.From) * $n / $W.Total)) ($W.Text -f $n, $W.Total) $eta
 }
 
 # --- Locate ffmpeg ---------------------------------------------------------------------
@@ -841,6 +939,7 @@ function Invoke-Main {
     $frames = Join-Path $work 'frames'; $upscaled = Join-Path $work 'upscaled'
     [void](New-Item -ItemType Directory -Path $frames, $upscaled)
     try {
+        if ($Dialogs -and $OnWindows) { Open-ProgressWindow $name }
         # --- Extract (lossless PNG, every frame, transparency kept) ---
         Write-Host 'Extracting frames...'
         $pattern = Join-Path $frames '%06d.png'
@@ -849,7 +948,8 @@ function Invoke-Main {
         } else {
             $a = @('-nostdin', '-v', 'error', '-i', $inputFile, '-map', "0:$vidx", '-fps_mode', 'passthrough', '-pix_fmt', 'rgba', $pattern)
         }
-        if ((Invoke-Tool $script:FFmpeg $a).Code -ne 0) { Fail 'ffmpeg could not read the frames' }
+        $w = New-Watch 0 3 'Reading frame {0} of {1}' $count -Dir $frames
+        if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail 'ffmpeg could not read the frames' }
         $extracted = @(Get-ChildItem -LiteralPath $frames -Filter '*.png').Count
         if ($extracted -ne $count) {
             Write-Host "Note: decoded $extracted frames (probe saw $count); spacing them evenly over ${total}s."
@@ -865,8 +965,14 @@ function Invoke-Main {
         $log = Join-Path $work 'upscayl.log'
         $a = @('-i', $frames, '-o', $upscaled, '-m', $script:ModelDir[$model], '-n', $model, '-z', "$scale", '-s', "$scale")
         if ($gpu -ne 'auto') { $a += '-g', $gpu }
-        $a += '-f', 'png'
-        $r = Invoke-Tool $script:Upscayl $a -Log $log
+        # Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per
+        # CPU thread made upscaling 2-5x faster without using more memory. -j takes one GPU
+        # thread count per GPU.
+        $procs = if ($gpu -eq 'auto') { '2' } else { (@($gpu.Split(',') | ForEach-Object { '2' })) -join ',' }
+        $savers = [math]::Min([math]::Max([Environment]::ProcessorCount, 2), 16)
+        $a += '-j', "2:${procs}:$savers", '-f', 'png'
+        $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
+        $r = Invoke-Tool $script:Upscayl $a -Log $log -Watch (New-Watch 3 85 'Upscaling frame {0} of {1}' $count -Dir $upscaled -Eta 'eta')
         $tail = { (Get-Content -LiteralPath $log -Tail 20) -join "`n" }
         if ($r.Code -ne 0) { Write-Host (& $tail); Fail 'Upscayl failed' }
         $done = @(Get-ChildItem -LiteralPath $upscaled -Filter '*.png').Count
@@ -894,7 +1000,8 @@ function Invoke-Main {
 
         Write-Host "Encoding $format..."
         $resize = "scale=${outW}:${outH}:flags=lanczos,setsar=1"
-        $in = @('-nostdin', '-v', 'error', '-stats', '-y', '-f', 'concat', '-safe', '0', '-i', $list)
+        $progressFile = Join-Path $work 'progress.txt'
+        $in = @('-nostdin', '-v', 'error', '-nostats', '-progress', $progressFile, '-stats_period', '0.5', '-y', '-f', 'concat', '-safe', '0', '-i', $list)
         # The frames start at 0; when the picture starts later than the audio, skip that
         # much audio so they stay in sync
         $first = ToNum ((Lines (Invoke-Tool $script:FFprobe @('-v', 'error', '-select_streams', "$vidx", '-read_intervals', '%+#1',
@@ -925,8 +1032,11 @@ function Invoke-Main {
                     '-map', '[c]', '-map', '[al]', '-c:v', 'libaom-av1', '-crf', '20', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt:0', 'yuv444p', '-f', 'avif', $outFile)
             }
         }
-        if ((Invoke-Tool $script:FFmpeg $a).Code -ne 0) { Fail "ffmpeg could not encode $format" }
+        # GIF output only appears at the end (the palette needs every frame first)
+        $w = New-Watch 85 100 "Encoding $format, frame {0} of {1}" $count -ProgressFile $progressFile -Eta 'eta-started'
+        if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail "ffmpeg could not encode $format" }
     } finally {
+        Close-Progress
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 
@@ -943,9 +1053,14 @@ function Invoke-Main {
 try {
     $code = Invoke-Main
 } catch {
-    $msg = $_.Exception.Message
-    [Console]::Error.WriteLine("upscale-gif: $msg")
-    if ($Dialogs -and $OnWindows) { try { [void](Show-Message $msg 'Error') } catch { } }
-    $code = 1
+    if ($script:Cancelled) {
+        Write-Host 'Cancelled.'
+        $code = 130
+    } else {
+        $msg = $_.Exception.Message
+        [Console]::Error.WriteLine("upscale-gif: $msg")
+        if ($Dialogs -and $OnWindows) { try { [void](Show-Message $msg 'Error') } catch { } }
+        $code = 1
+    }
 }
 exit $code

@@ -42,6 +42,7 @@ declare -A FMT_DESC=(
 have() { command -v "$1" >/dev/null 2>&1; }
 gui() { [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] && have zenity; }
 die() {
+    declare -F progress_close >/dev/null && progress_close
     echo "upscale-gif: $*" >&2
     if [[ ! -t 2 ]] && gui; then zenity --error --title="Upscale GIF" --text="$*" 2>/dev/null || true; fi
     exit 1
@@ -531,37 +532,124 @@ cleanup() {
     # A second Ctrl+C mustn't interrupt the cleanup
     trap '' INT TERM HUP
     if [[ -n $child ]]; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi
+    declare -F progress_close >/dev/null && progress_close
     [[ -z $work ]] || rm -rf "$work"
 }
 trap cleanup EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
-run() { "$@" & child=$!; wait "$child"; local rc=$?; child=""; return $rc; }
 work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
 mkdir "$work/frames" "$work/upscaled"
 
-# --- Extract (lossless PNG, every frame, transparency kept) ----------------------------
-echo "Extracting frames..."
-if [[ -n $aidx ]]; then
-    run ffmpeg -nostdin -v error -i "$input" -filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba" \
-        -fps_mode passthrough "$work/frames/%06d.png"
-else
-    run ffmpeg -nostdin -v error -i "$input" -map "0:$vidx" -fps_mode passthrough -pix_fmt rgba "$work/frames/%06d.png"
+# --- Progress -----------------------------------------------------------------------------
+# Upscayl only reports progress per image, so progress comes from counting finished frames.
+# It is shown in a window with a Cancel button when there is no terminal (e.g. started from
+# the desktop), and as a bar in the terminal otherwise. The slow steps run in the background
+# while a loop updates it.
+exec 3>&2
+progress_mode=none progress_pid="" cancelled=$work/cancelled shown="" up_start=""
+if [[ ! -t 1 ]] && gui; then progress_mode=window
+elif [[ -t 2 ]]; then progress_mode=terminal; fi
+if [[ $progress_mode == window ]]; then
+    trap '' PIPE
+    # zenity exits with 1 when Cancel is pressed or the window is closed
+    exec 4> >(zenity --progress --title="Upscale GIF" --width=460 --auto-close --percentage=0 \
+        --text="$(basename "$input")" 2>/dev/null || touch "$cancelled")
+    progress_pid=$!
 fi
-extracted=$(ls "$work/frames" | wc -l)
+progress_close() {
+    [[ -n $progress_pid ]] || return 0
+    exec 4>&-
+    kill "$progress_pid" 2>/dev/null || true
+    progress_pid=""
+}
+fmt_time() {
+    if (( $1 >= 3600 )); then printf '%d:%02d:%02d' $(($1 / 3600)) $(($1 / 60 % 60)) $(($1 % 60))
+    else printf '%d:%02d' $(($1 / 60)) $(($1 % 60)); fi
+}
+# Messages go above the terminal progress bar
+say() { [[ $progress_mode != terminal ]] || printf '\r\033[K' >&3; echo "$@"; }
+# progress PERCENT TEXT [eta]: "eta" estimates the time left from the upscaling speed
+# (it starts at 3% and takes most of the time)
+progress() {
+    local p=$1 text=$2 left="" bar
+    (( p < 100 )) || p=99
+    if [[ ${3:-} == eta && -n $up_start ]] && (( p > 4 && SECONDS - up_start >= 3 )); then
+        left="about $(fmt_time $(( (SECONDS - up_start) * (100 - p) / (p - 3) + 1 ))) left"
+    fi
+    [[ "$p $text $left" != "$shown" ]] || return 0
+    shown="$p $text $left"
+    case $progress_mode in
+        window) printf '%d\n# %s%s\n' "$p" "$text" "${left:+ — $left}" >&4 2>/dev/null || true ;;
+        terminal)
+            printf -v bar '%*s' $((p * 30 / 100)) ''
+            printf '\r\033[K[%-30s] %3d%%  %s%s' "${bar// /#}" "$p" "$text" "${left:+, $left}" >&3 ;;
+    esac
+}
+progress_finish() {
+    case $progress_mode in
+        window) printf '100\n' >&4 2>/dev/null || true; sleep 0.3; progress_close ;;
+        terminal) printf '\r\033[K' >&3 ;;
+    esac
+}
+count_files() { local f=("$1"/*); [[ -e ${f[0]} ]] && echo ${#f[@]} || echo 0; }
+count_extracted() { count_files "$work/frames"; }
+count_upscaled() { count_files "$work/upscaled"; }
+count_encoded() { local n; n=$(sed -n 's/^frame=//p' "$work/progress.txt" 2>/dev/null | tail -1); echo "${n:-0}"; }
+# watch FROM TO TEXT COUNTER ETA LOG -- command...: runs the command (its output going to
+# LOG unless that is "-") and maps the count from
+# COUNTER (out of $count) onto FROM..TO percent; TEXT gets the count and total via printf.
+# "eta" shows the time left; "eta-started" only once the count has started moving.
+watch() {
+    local from=$1 to=$2 text=$3 counter=$4 eta=$5 log=$6 n e rc=0
+    shift 7
+    if [[ $log == - ]]; then "$@" & else "$@" >"$log" 2>&1 & fi
+    child=$!
+    while kill -0 "$child" 2>/dev/null; do
+        [[ ! -e $cancelled ]] || { say "Cancelled."; exit 130; }
+        n=$("$counter"); (( n <= count )) || n=$count
+        e=$eta; [[ $eta != eta-started ]] || { (( n > 0 )) && e=eta || e=-; }
+        # shellcheck disable=SC2059
+        progress $(( from + (to - from) * n / count )) "$(printf "$text" "$n" "$count")" "$e"
+        sleep 0.5
+    done
+    wait "$child" || rc=$?
+    child=""
+    return $rc
+}
+
+# --- Extract (lossless PNG, every frame, transparency kept) ----------------------------
+say "Extracting frames..."
+if [[ -n $aidx ]]; then
+    extract=(-filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba")
+else
+    extract=(-map "0:$vidx" -pix_fmt rgba)
+fi
+watch 0 3 "Reading frame %d of %d" count_extracted - - -- \
+    ffmpeg -nostdin -v error -i "$input" "${extract[@]}" -fps_mode passthrough "$work/frames/%06d.png" \
+    || die "ffmpeg could not read the frames of $(basename "$input")"
+extracted=$(count_extracted)
+(( extracted > 0 )) || die "no frames could be decoded from $(basename "$input")"
 if (( extracted != count )); then
-    echo "Note: decoded $extracted frames (probe saw $count); spacing them evenly over ${total}s."
+    say "Note: decoded $extracted frames (probe saw $count); spacing them evenly over ${total}s."
     d=$(awk -v t="$total" -v n="$extracted" 'BEGIN { printf "%.6f", t / n }')
     durations=(); for ((i = 0; i < extracted; i++)); do durations+=("$d"); done
     count=$extracted
 fi
 
-# --- Upscale 4× ----------------------------------------------------------------------
-echo "Upscaling $count frames with $model..."
+# --- Upscale ------------------------------------------------------------------------------
+say "Upscaling $count frames with $model..."
 gpu_arg=(); [[ $gpu == auto ]] || gpu_arg=(-g "$gpu")
-run "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
-    -z "$scale" -s "$scale" "${gpu_arg[@]}" -f png >"$work/upscayl.log" 2>&1 \
+# Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per CPU
+# thread made upscaling 2-5x faster without using more memory. -j takes one GPU thread
+# count per GPU.
+procs=2; [[ $gpu == auto ]] || { procs=${gpu//[0-9]/}; procs=$(printf '2%.0s' $(seq 0 ${#procs}) | sed 's/./&,/g; s/,$//'); }
+savers=$(nproc 2>/dev/null || echo 4); (( savers >= 2 )) || savers=2; (( savers <= 16 )) || savers=16
+up_start=$SECONDS
+watch 3 85 "Upscaling frame %d of %d" count_upscaled eta "$work/upscayl.log" -- \
+    "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
+    -z "$scale" -s "$scale" "${gpu_arg[@]}" -j "2:$procs:$savers" -f png \
     || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
-upscaled=$(ls "$work/upscaled" | wc -l)
+upscaled=$(count_upscaled)
 (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
 
 # --- Reassemble with each frame's original timing ---------------------------------------
@@ -580,9 +668,10 @@ done >"$list"
 [[ $format == gif ]] || frame "$count" >>"$list"
 final_delay=$(awk -v d="${durations[count - 1]}" 'BEGIN { printf "%d", d * 100 + 0.5 }')
 
-echo "Encoding $format..."
+say "Encoding $format..."
 resize="scale=${out_w}:${out_h}:flags=lanczos,setsar=1"
-in=(-nostdin -v error -stats -y -f concat -safe 0 -i "$list")
+stats=(-stats); [[ $progress_mode == none ]] || stats=(-nostats)
+in=(-nostdin -v error "${stats[@]}" -progress "$work/progress.txt" -stats_period 0.5 -y -f concat -safe 0 -i "$list")
 # The frames start at 0; when the picture starts later than the audio, skip that much
 # audio so they stay in sync
 first=$(ffprobe -v error -select_streams "$vidx" -read_intervals '%+#1' \
@@ -590,26 +679,32 @@ first=$(ffprobe -v error -select_streams "$vidx" -read_intervals '%+#1' \
 start=$(ffprobe -v error -show_entries format=start_time -of default=nw=1:nk=1 "$input")
 skip=$(awk -v a="$first" -v b="$start" 'BEGIN { d = a - b; if (a != "N/A" && b != "N/A" && d > 0.001) printf "%.6f", d }')
 audio=(${skip:+-ss "$skip"} -i "$input" -map 0:v -map "1:a:0?")
+# GIF output only appears at the end (the palette needs every frame first)
+encode() {
+    watch 85 100 "Encoding $format, frame %d of %d" count_encoded eta-started - -- "$@" \
+        || die "ffmpeg could not encode $format"
+}
 case $format in
     gif)
-        run ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+        encode ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
             -loop 0 -final_delay "$final_delay" -f gif "$output" ;;
     mp4)
         # H.264 has no alpha: transparent areas become black
-        run ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
+        encode ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
             -vf "$resize,format=rgba,premultiply=inplace=1,format=yuv420p" \
             -c:v libx264 -preset slow -crf 16 -c:a aac -b:a 192k -movflags +faststart -f mp4 "$output" ;;
     webm)
-        run ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
+        encode ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
             -c:v libvpx-vp9 -crf 18 -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k -f webm "$output" ;;
     avif)
         # AVIF stores transparency as a second AV1 stream
-        run ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
+        encode ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]" -map "[c]" -map "[al]" \
             -c:v libaom-av1 -crf 20 -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p -f avif "$output" ;;
 esac
 
+progress_finish
 msg="Saved $(basename "$output") ($(du -h "$output" | cut -f1))"
 echo "$msg"
 if [[ ! -t 1 ]] && gui; then notify-send -a "Upscale GIF" -i image-x-generic "$msg" "$(dirname "$output")" || true; fi

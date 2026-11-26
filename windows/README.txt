@@ -41,8 +41,8 @@ Use
 - Or right-click a file > Send to > Upscale GIF.
   (On Windows 11, choose "Show more options" first.)
 
-A console window shows the progress. When it's done, you can open the folder of the new
-file. By default the result is saved next to the original as <name>_<width>x<height>.<ext>.
+A progress window shows the current step and the time left, with a Cancel button. When
+it's done, you can open the folder of the new file. By default the result is saved next to the original as <name>_<width>x<height>.<ext>.
 
 Custom models: models in the custom models folder chosen in Upscayl
 (Settings > Custom models folder) appear in the model list automatically.
