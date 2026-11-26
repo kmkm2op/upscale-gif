@@ -6,7 +6,9 @@ its transparency and its audio.
 
   Input:  GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
           video formats
-  Output: GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1)
+  Output: GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images (PNG, JPEG, WebP,
+          BMP, TIFF...) also as PNG, JPEG or WebP
+  Quality: one 1-100% setting (default 80%), used by every format except PNG
 
 Everything it needs is included: Upscayl's upscaler, 18 AI models and ffmpeg. Four of the
 models (marked in the list) are for non-commercial use only; see THIRD-PARTY-NOTICES.
@@ -50,7 +52,7 @@ If you also have the Upscayl app, its models and its custom models folder
 
 Command line:
 
-    upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [file]
+    upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-g gpu] [-o output] [file]
     upscale-gif -c    show the detected upscaler, models, GPUs and ffmpeg
     upscale-gif -h    help
 

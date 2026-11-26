@@ -20,6 +20,7 @@ statically:
 | libvpx | 1.17.0 | BSD-3-Clause, plus patent grant | https://github.com/webmproject/libvpx |
 | libaom | 3.15.3 | BSD-2-Clause, plus AOM patent license | https://aomedia.googlesource.com/aom |
 | Opus | 1.6.1 | BSD-3-Clause | https://opus-codec.org |
+| libwebp | 1.6.0 | BSD-3-Clause, plus patent grant | https://chromium.googlesource.com/webm/libwebp |
 | zlib | 1.4 | zlib | https://zlib.net |
 
 The Windows package also contains `vcomp140.dll`, Microsoft's OpenMP runtime from the

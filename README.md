@@ -5,8 +5,10 @@ upscaler and Real-ESRGAN models.
 The output keeps every frame's original timing, its transparency and its audio.
 
 - **Input:** GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
-  video formats
-- **Output:** GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1)
+  video formats; also still images (PNG, JPEG, WebP, AVIF, BMP, TIFF)
+- **Output:** GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1); still images also as PNG, JPEG or
+  WebP
+- **Quality:** one 1–100% setting, mapped onto each format's own quality scale
 - **Interface:** command-line options, or a small settings window for anything you leave
   out, so it also works from a desktop launcher or file manager
 - **Platforms:** Linux (bash) and Windows (PowerShell)
@@ -28,6 +30,26 @@ The output keeps every frame's original timing, its transparency and its audio.
 | webm   | VP9        | yes                    | yes (Opus) |
 | avif   | AV1        | yes                    | no    |
 | mp4    | H.264      | no (becomes black)     | yes (AAC) |
+| png    | PNG        | yes                    | still images only, lossless |
+| jpg    | JPEG       | no (becomes white)     | still images only |
+| webp   | WebP       | yes                    | still images only |
+
+When the input has a single frame (a photo, or a one-frame GIF), the settings window offers
+PNG, JPEG, WebP, AVIF and GIF instead of the video formats, and AVIF is saved as a still
+image. Photos with an EXIF orientation are turned upright.
+
+**Quality** (`-q`, default 80%) sets how much compression each format uses. 80% gives
+the defaults below; 100% is the best the format offers. It is ignored for PNG, which is
+always lossless.
+
+| Format | 80% | 100% | Lower |
+|---|---|---|---|
+| mp4 | CRF 16 | CRF 7 | up to CRF 51 |
+| webm | CRF 18 | CRF 7 | up to CRF 63 |
+| avif | CRF 20 | CRF 9 | up to CRF 63 |
+| jpg | q 7 | q 1 | up to q 31 |
+| webp | quality 80 | lossless | quality = the percentage |
+| gif | 256 colours | 256 colours | fewer colours below 80% (smaller files) |
 
 Temporary frames go to `~/.cache/upscale-gif.XXXXXX` (or `$XDG_CACHE_HOME`), not `/tmp`,
 because they can take several GB. That folder is deleted when the script exits.
@@ -87,7 +109,7 @@ Pushing a tag like `v1.0.0` runs the same build on GitHub Actions
 ## Usage
 
 ```
-upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [input]
+upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-g gpu] [-o output] [input]
 upscale-gif -c     # show detected Upscayl, models, GPUs and ffmpeg encoders
 upscale-gif -h     # help
 ```
@@ -97,7 +119,8 @@ upscale-gif -h     # help
 | `-m model`  | Upscayl model name, e.g. `digital-art-4x` (see `-c` for the list) |
 | `-w width`  | Output width in pixels; height follows the aspect ratio |
 | `-H height` | Output height in pixels; width follows the aspect ratio |
-| `-f format` | `gif`, `mp4`, `webm` or `avif`. Can be left out when `-o` ends in one of these |
+| `-f format` | `gif`, `mp4`, `webm`, `avif`, and for single images `png`, `jpg`, `webp`. Can be left out when `-o` ends in one of these |
+| `-q quality`| 1–100 (default 80); ignored for `png` |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 

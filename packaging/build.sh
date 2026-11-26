@@ -61,7 +61,7 @@ export PATH=$TOOLS/bin:$PATH
 build_ffmpeg() {
     local t=$1 p=$CACHE/$1/prefix s=$CACHE/$1/src stamp
     # Rebuild when its sources or this function change
-    stamp=$( { grep -E '^(nasm|zlib|x264|opus|libvpx|libaom|ffmpeg|llvm-mingw)-' "$HERE/sources.txt"; declare -f build_ffmpeg; } \
+    stamp=$( { grep -E '^(nasm|zlib|x264|opus|libwebp|libvpx|libaom|ffmpeg|llvm-mingw)-' "$HERE/sources.txt"; declare -f build_ffmpeg; } \
         | sha256sum | cut -c1-16)
     [[ $(cat "$CACHE/$t/stamp" 2>/dev/null) == "$stamp" ]] && return 0
     rm -rf "$CACHE/$t"; mkdir -p "$p" "$s"
@@ -108,6 +108,12 @@ build_ffmpeg() {
         --disable-doc --disable-extra-programs --with-pic && make -s -j"$JOBS" && make -s install) \
         >"$s/opus.log" 2>&1 || { tail -30 "$s/opus.log"; exit 1; }
 
+    log "[$t] libwebp"
+    unpack "$DL/libwebp-1.6.0.tar.gz" "$s/libwebp"
+    (cd "$s/libwebp" && CC=${cross}gcc ./configure --prefix="$p" "${host[@]}" --enable-static --disable-shared --with-pic \
+        --disable-libwebpdecoder --disable-sdl --disable-png --disable-jpeg --disable-tiff --disable-gif --disable-wic \
+        && make -s -j"$JOBS" && make -s install) >"$s/libwebp.log" 2>&1 || { tail -30 "$s/libwebp.log"; exit 1; }
+
     log "[$t] libvpx"
     unpack "$DL/libvpx-1.17.0.tar.gz" "$s/libvpx"
     (cd "$s/libvpx" && CROSS=$cross ./configure --prefix="$p" --target=$vpx_target --as=nasm \
@@ -126,16 +132,16 @@ build_ffmpeg() {
     log "[$t] ffmpeg"
     unpack "$DL/ffmpeg-9.1.tar.xz" "$s/ffmpeg"
     local filters=buffer,buffersink,abuffer,abuffersink,format,aformat,null,anull,copy,scale,setsar,split,palettegen
-    filters+=,paletteuse,alphamerge,alphaextract,premultiply,aresample,atrim,trim,setpts,asetpts
+    filters+=,paletteuse,alphamerge,alphaextract,premultiply,aresample,atrim,trim,setpts,asetpts,color,overlay
     (cd "$s/ffmpeg" && ./configure --prefix="$p" "${ff[@]}" --pkg-config=pkg-config --pkg-config-flags=--static \
         --extra-cflags="-I$p/include" --extra-ldflags="-L$p/lib" --extra-libs="-lpthread -lm" \
         --enable-gpl --enable-static --disable-shared --disable-autodetect --disable-debug --disable-doc \
         --disable-network --disable-ffplay --disable-everything --enable-zlib \
-        --enable-libx264 --enable-libvpx --enable-libaom --enable-libopus \
+        --enable-libx264 --enable-libvpx --enable-libaom --enable-libopus --enable-libwebp \
         --enable-protocol=file,pipe \
         --enable-demuxers --enable-decoders --enable-parsers --enable-bsfs \
-        --enable-encoder=gif,png,libx264,libvpx_vp9,libaom_av1,aac,libopus,wrapped_avframe \
-        --enable-muxer=gif,mp4,webm,avif,image2,null \
+        --enable-encoder=gif,png,mjpeg,libwebp,libx264,libvpx_vp9,libaom_av1,aac,libopus,wrapped_avframe \
+        --enable-muxer=gif,mp4,webm,avif,webp,image2,null \
         --enable-filter=$filters \
         && make -s -j"$JOBS" && make -s install) >"$s/ffmpeg.log" 2>&1 || { tail -40 "$s/ffmpeg.log"; exit 1; }
     echo "$stamp" >"$CACHE/$t/stamp"
@@ -159,6 +165,7 @@ add_common() {   # add_common DIR TARGET: licenses, notices and the icon
     cp "$s/aom/LICENSE" "$l/libaom-LICENSE.txt"; cp "$s/aom/PATENTS" "$l/libaom-PATENTS.txt"
     cp "$s/opus/COPYING" "$l/opus-LICENSE.txt"
     cp "$s/zlib/LICENSE" "$l/zlib-LICENSE.txt"
+    cp "$s/libwebp/COPYING" "$l/libwebp-LICENSE.txt"; cp "$s/libwebp/PATENTS" "$l/libwebp-PATENTS.txt"
     python3 -m zipfile -e "$DL/upscayl-bin-linux.zip" "$CACHE/upscayl-lic"
     cp "$CACHE"/upscayl-lic/*/LICENSE "$l/upscayl-ncnn-AGPL-3.0.txt"; rm -rf "$CACHE/upscayl-lic"
     cp "$DL/Real-ESRGAN-LICENSE" "$l/Real-ESRGAN-models-BSD-3-Clause.txt"
@@ -221,12 +228,12 @@ package_sources() {
     d=$CACHE/pkg/$name; rm -rf "$d"; mkdir -p "$d"
     log "Packaging $name"
     cp "$DL/ffmpeg-9.1.tar.xz" "$DL/$X264.tar.bz2" "$DL/libvpx-1.17.0.tar.gz" "$DL/libaom-3.15.3.tar.gz" \
-        "$DL/opus-1.6.1.tar.gz" "$DL/zlib-1.4.tar.gz" "$DL/upscayl-ncnn-20251207-174704.tar.gz" "$d/"
+        "$DL/opus-1.6.1.tar.gz" "$DL/zlib-1.4.tar.gz" "$DL/libwebp-1.6.0.tar.gz" "$DL/upscayl-ncnn-20251207-174704.tar.gz" "$d/"
     mkdir -p "$d/packaging"; cp "$HERE/sources.txt" "$HERE/models.txt" "$HERE/build.sh" "$d/packaging/"
     cat >"$d/README.txt" <<EOF
 Source code of the GPL and AGPL programs bundled with upscale-gif $VERSION:
 
-  ffmpeg 9.1 (GPL-2.0-or-later, with x264), x264, libvpx, libaom, opus and zlib: built
+  ffmpeg 9.1 (GPL-2.0-or-later, with x264), x264, libvpx, libaom, opus, libwebp and zlib: built
     statically into bin/ffmpeg and bin/ffprobe by packaging/build.sh
   upscayl-ncnn 20251207-174704 (AGPL-3.0): bin/upscayl-bin, unmodified
     (the release binary from https://github.com/upscayl/upscayl-ncnn)

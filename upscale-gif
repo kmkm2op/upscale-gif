@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Upscale an animation or video (gif, mp4, webm, avif, webp, apng, mkv, mov...) with Upscayl
-# and save it as gif, mp4, webm or avif.
+# Upscale an animation, video or image (gif, mp4, webm, avif, webp, apng, mkv, mov, png, jpg...)
+# with Upscayl and save it as gif, mp4, webm or avif (images also as png, jpg or webp).
 #
-# Usage: upscale-gif [-m model] [-w width | -H height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [input]
+# Usage: upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality%] [-g gpu] [-o output] [input]
 #        upscale-gif -c    (show detected tools, models and GPUs)
-# Anything not given on the command line is asked for in a settings window.
-# Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos) to the chosen size.
-# Every frame keeps its original timing; audio is kept for mp4/webm output.
+# Anything not given on the command line is asked for in a settings window. Formats: gif, mp4,
+# webm, avif, and for single images png, jpg, webp. -q: 1-100 (default 80; ignored for png).
+# Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
+# keeps its original timing, and audio is kept for mp4/webm output.
 #
 # Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the windows, zenity
 # (kdialog is used for the file picker when available). The release packages include
@@ -25,7 +26,7 @@ set -euo pipefail
 
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
 WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
-model="" format="" width="" height="" output="" input="" gpu=""
+model="" format="" width="" height="" output="" input="" gpu="" quality=""
 # Release packages carry upscayl-bin, ffmpeg and ffprobe in bin/ and the models in models/
 SELF_DIR=$(dirname "$(realpath "$0")")
 BUNDLE_BIN=$SELF_DIR/bin
@@ -65,7 +66,12 @@ MODEL_ORDER=(upscayl-standard-4x upscayl-lite-4x digital-art-4x high-fidelity-4x
 declare -A FMT_DESC=(
     [gif]="GIF" [webm]="WebM (VP9, keeps transparency and audio)"
     [avif]="AVIF (AV1, keeps transparency)" [mp4]="MP4 (H.264, keeps audio, no transparency)"
+    [png]="PNG (lossless, keeps transparency)" [jpg]="JPEG (small, no transparency)"
+    [webp]="WebP (keeps transparency)"
 )
+ANIM_FORMATS=(gif webm avif mp4)
+IMAGE_FORMATS=(png jpg webp avif gif)   # offered when the input is a single image
+QUALITIES=(100 95 90 85 80 75 70 60 50 40 30 20 10)
 
 have() { command -v "$1" >/dev/null 2>&1; }
 gui() { [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] && have zenity; }
@@ -280,7 +286,7 @@ gpus() {
 }
 
 encoder() { ffmpeg -hide_banner -encoders 2>/dev/null | awk '{ print $2 }' | grep -qx "$1"; }
-declare -A ENCODER=([gif]=gif [mp4]=libx264 [webm]=libvpx-vp9 [avif]=libaom-av1)
+declare -A ENCODER=([gif]=gif [mp4]=libx264 [webm]=libvpx-vp9 [avif]=libaom-av1 [png]=png [jpg]=mjpeg [webp]=libwebp)
 
 check() {
     local ok=0 f m src line builtin=() app=() custom=()
@@ -314,7 +320,7 @@ check() {
     for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
     if have ffmpeg; then
         echo "ffmpeg:         $(command -v ffmpeg) ($(ffmpeg -version | head -1 | cut -d' ' -f3))"
-        for f in gif mp4 webm avif; do
+        for f in gif mp4 webm avif png jpg webp; do
             if encoder "${ENCODER[$f]}"; then printf '  %-14s yes (%s)\n' "$f output:" "${ENCODER[$f]}"
             else printf '  %-14s no (ffmpeg lacks %s)\n' "$f output:" "${ENCODER[$f]}"; ok=1; fi
         done
@@ -325,12 +331,12 @@ check() {
 }
 
 pick_file() {
-    local filter="*.gif *.webp *.png *.apng *.avif *.mp4 *.m4v *.webm *.mkv *.mov"
+    local filter="*.gif *.webp *.png *.apng *.avif *.mp4 *.m4v *.webm *.mkv *.mov *.jpg *.jpeg *.bmp *.tif *.tiff"
     if have kdialog; then
-        kdialog --title "Choose an animation or video to upscale" --getopenfilename "$last_dir" "$filter|Animations and videos"
+        kdialog --title "Choose an image, animation or video to upscale" --getopenfilename "$last_dir" "$filter|Images, animations and videos"
     else
-        zenity --file-selection --title="Choose an animation or video to upscale" --filename="$last_dir/" \
-            --file-filter="Animations and videos | $filter" --file-filter="All files | *"
+        zenity --file-selection --title="Choose an image, animation or video to upscale" --filename="$last_dir/" \
+            --file-filter="Images, animations and videos | $filter" --file-filter="All files | *"
     fi
 }
 even() { echo $(( ($1 + 1) / 2 * 2 )); }
@@ -338,16 +344,17 @@ human() { numfmt --to=iec --suffix=B "$1"; }
 # Temporary space: PNG frames compress to roughly half of raw RGBA; original + upscaled copies
 space_for() { echo $(( count * src_w * src_h * 4 * (1 + $1 * $1) / 2 )); }
 
-while getopts "m:w:H:f:g:o:ch" opt; do
+while getopts "m:w:H:f:q:g:o:ch" opt; do
     case $opt in
         m) model=$OPTARG ;;
         w) width=$OPTARG ;;
         H) height=$OPTARG ;;
-        f) format=${OPTARG,,} ;;
+        f) format=${OPTARG,,}; [[ $format != jpeg ]] || format=jpg ;;
+        q) quality=${OPTARG%\%} ;;
         o) output=$OPTARG ;;
         g) gpu=${OPTARG,,} ;;
         c) check; exit ;;
-        h) sed -n '5,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        h) sed -n '5,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
         *) exit 1 ;;
     esac
 done
@@ -355,8 +362,8 @@ shift $((OPTIND - 1))
 input=${1:-}
 
 # The output name's extension picks the format when -f isn't given
-out_ext=${output##*.}; out_ext=${out_ext,,}
-if [[ -n $output && $out_ext =~ ^(gif|mp4|webm|avif)$ ]]; then
+out_ext=${output##*.}; out_ext=${out_ext,,}; [[ $out_ext != jpeg ]] || out_ext=jpg
+if [[ -n $output && $out_ext =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]]; then
     [[ -z $format || $format == "$out_ext" ]] || die "output name ends in .$out_ext but the format is $format"
     format=$out_ext
 fi
@@ -365,9 +372,10 @@ for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not instal
 [[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
 [[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
 [[ -z $gpu || $gpu =~ ^(auto|[0-9]+(,[0-9]+)*)$ ]] || die "GPU must be auto, a number or a list like 0,1 (see -c)"
+[[ -z $quality ]] || { [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )); } || die "quality must be 1 to 100"
 
 # Remembered choices from the last run
-last_model="" last_format=gif last_dir=$HOME
+last_model="" last_format=gif last_image_format="" last_quality=80 last_dir=$HOME
 [[ -f $CONF ]] && source "$CONF"
 if [[ -z $last_model || -z ${MODEL_DIR[$last_model]:-} ]]; then
     last_model=${MODEL_LIST[0]:-}
@@ -417,6 +425,12 @@ if [[ $sar =~ ^([0-9]+):([0-9]+)$ ]] && (( BASH_REMATCH[1] > 0 && BASH_REMATCH[2
     && [[ $(ffprobe -v error -show_entries format=format_name -of csv=p=0 "$input") != gif ]]; then
     src_w=$(( (src_w * BASH_REMATCH[1] + BASH_REMATCH[2] / 2) / BASH_REMATCH[2] ))
 fi
+# Photos keep their orientation (EXIF) on the frame instead of the stream
+if (( rotation == 0 )); then
+    rotation=$(ffprobe -v error -select_streams "$vidx" -read_intervals '%+#1' \
+        -show_entries frame_side_data=rotation -of default=nw=1:nk=1 "$input" | head -1)
+    rotation=${rotation%.*}; [[ $rotation =~ ^-?[0-9]+$ ]] || rotation=0
+fi
 if (( rotation % 180 != 0 )); then t=$src_w; src_w=$src_h; src_h=$t; fi
 fallback=$(awk -v r="$avg_rate" 'BEGIN { split(r, a, "/"); f = (a[2] ? a[1] / a[2] : 0); printf "%.6f", (f > 0 ? 1 / f : 0.1) }')
 
@@ -447,6 +461,21 @@ mkdir -p "$WORKROOT" || die "can't create $WORKROOT"
 free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 
+# A single frame is a still image: it can also be saved as png, jpg or webp
+still=0; (( count == 1 )) && still=1
+if (( still )); then
+    formats=("${IMAGE_FORMATS[@]}")
+    in_ext=${input##*.}; in_ext=${in_ext,,}; [[ $in_ext != jpeg ]] || in_ext=jpg
+    [[ " ${IMAGE_FORMATS[*]} " == *" $in_ext "* ]] || in_ext=""
+    default_format=${last_image_format:-${in_ext:-png}}
+    about="${src_w} × ${src_h}, still image"
+else
+    formats=("${ANIM_FORMATS[@]}")
+    default_format=$last_format
+    about="${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps"
+fi
+[[ " ${formats[*]} " == *" $default_format "* ]] || default_format=${formats[0]}
+
 # --- Settings window (only for what wasn't given on the command line) ----------------
 if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     gui || die "missing -m/-f/-w options (and no desktop session for the settings window)"
@@ -473,7 +502,7 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     done
 
     format_items=()
-    for f in "$last_format" gif webm avif mp4; do
+    for f in "$default_format" "${formats[@]}"; do
         encoder "${ENCODER[$f]}" || continue
         [[ " ${format_items[*]} " == *" $f — "* ]] || format_items+=("$f — ${FMT_DESC[$f]}")
     done
@@ -516,19 +545,29 @@ Leave empty to use <i>Output size</i>.</small>"
         custom_help=""
     fi
     [[ -n $format ]] || field format --add-combo="Format" --combo-values="$(join "${format_items[@]}")"
+    if [[ -z $quality && $format != png ]]; then
+        quality_items=()
+        for q in "$last_quality" "${QUALITIES[@]}"; do
+            [[ " ${quality_items[*]} " == *" $q% "* ]] || quality_items+=("$q%")
+        done
+        quality_label="Quality (higher is better but larger)"; (( still )) && quality_label+=", not used for PNG"
+        field quality --add-combo="$quality_label" --combo-values="$(join "${quality_items[@]}")"
+    fi
     (( ${#gpu_items[@]} )) && field gpu --add-combo="GPU" --combo-values="$(join "${gpu_items[@]}")"
     form=$(zenity --forms --title="Upscale GIF" --width=480 --separator=$'\x1f' \
-        --text="<b>$(basename "$input")</b>\n${src_w} × ${src_h}, $count frames, ${total}s, ~$fps fps\n$space_note$warn${custom_help:+\n\n$custom_help}" \
+        --text="<b>$(basename "$input")</b>\n$about\n$space_note$warn${custom_help:+\n\n$custom_help}" \
         "${fields[@]}") || exit 0
     IFS=$'\x1f' read -r -a answers <<<"$form"
     declare -A answer=()
     for i in "${!keys[@]}"; do answer[${keys[$i]}]=${answers[$i]:-}; done
     f_model=${answer[model]:-} f_size=${answer[size]:-} f_custom=${answer[custom]:-} f_format=${answer[format]:-} f_gpu=${answer[gpu]:-}
+    if [[ -n ${answer[quality]+set} ]]; then
+        quality=${answer[quality]%\%}; [[ -n $quality ]] || quality=$last_quality
+    fi
 
     [[ -n $model ]] || model=${f_model%% —*}
     [[ -n $model ]] || model=${model_items[0]%% —*}
     [[ -n $format ]] || format=${f_format%% —*}
-    [[ -n $format ]] || format=$last_format
     if (( ${#gpu_items[@]} )); then
         [[ -n $f_gpu ]] || f_gpu=${gpu_items[0]}
         gpu=${f_gpu%% —*}
@@ -544,12 +583,16 @@ Leave empty to use <i>Output size</i>.</small>"
 fi
 
 # --- Validate and work out the final size --------------------------------------------
+format=${format:-$default_format} quality=${quality:-80}
+[[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )) || quality=80
 [[ -n $model && -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]}"
 gpu=${gpu:-${upscayl_gpu:-auto}}
 scale=$(model_scale "$model")
 max_w=$((src_w * scale)) need=$(space_for "$scale")
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
-[[ $format =~ ^(gif|mp4|webm|avif)$ ]] || die "unsupported format: $format"
+[[ $format =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]] || die "unsupported format: $format"
+[[ $still == 1 || ! $format =~ ^(png|jpg|webp)$ ]] \
+    || die "$format output is for single images, and $(basename "$input") has $count frames (use gif, webm, avif or mp4)"
 encoder "${ENCODER[$format]}" || die "this ffmpeg build can't encode $format (missing ${ENCODER[$format]})"
 if [[ -n $width ]]; then
     [[ $width =~ ^[0-9]+$ ]] && (( width > 0 )) || die "width must be a whole number"
@@ -569,10 +612,14 @@ out_dir=$(dirname -- "$output")
 [[ -d $out_dir ]] || die "folder not found: $out_dir"
 [[ -w $out_dir ]] || die "can't write to $out_dir"
 
-{ mkdir -p "$(dirname "$CONF")" && printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"; } 2>/dev/null || true
+if (( still )); then last_image_format=$format; else last_format=$format; fi
+[[ $format == png ]] || last_quality=$quality
+{ mkdir -p "$(dirname "$CONF")" && printf 'last_model=%q\nlast_format=%q\nlast_image_format=%q\nlast_quality=%q\nlast_dir=%q\n' \
+    "$model" "$last_format" "$last_image_format" "$last_quality" "$(dirname "$(realpath "$input")")" >"$CONF"; } 2>/dev/null || true
 
-echo "Input:  ${src_w}×${src_h}, $count frames, ${total}s, ~$fps fps"
-echo "Output: ${out_w}×${out_h} $format, model $model (${scale}×), GPU $gpu"
+echo "Input:  ${about// × /×}"
+q_note=", quality $quality%"; [[ $format != png ]] || q_note=""
+echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), GPU $gpu"
 
 # Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB.
 # The slow steps run in the background so that closing the terminal or a kill stops them
@@ -729,6 +776,17 @@ first=$(ffprobe -v error -select_streams "$vidx" -read_intervals '%+#1' \
 start=$(ffprobe -v error -show_entries format=start_time -of default=nw=1:nk=1 "$input")
 skip=$(awk -v a="$first" -v b="$start" 'BEGIN { d = a - b; if (a != "N/A" && b != "N/A" && d > 0.001) printf "%.6f", d }')
 audio=(${skip:+-ss "$skip"} -i "$input" -map 0:v -map "1:a:0?")
+# Quality (1-100) on each encoder's own scale; 80 gives the earlier defaults. 100 is
+# lossless for WebP, 256 colours for GIF from 80 up.
+qmap() { awk -v q="$quality" -v a="$1" -v b="$2" -v lo="$3" -v hi="$4" \
+    'BEGIN { v = int(a - q * b + 0.5); if (v < lo) v = lo; if (v > hi) v = hi; print v }'; }
+crf_x264=$(qmap 51 0.4375 0 51)    # 80 -> 16
+crf_vp9=$(qmap 63 0.5625 0 63)     # 80 -> 18
+crf_aom=$(qmap 63 0.5375 0 63)     # 80 -> 20
+q_jpeg=$(qmap 31 0.3 1 31)         # 80 -> 7 (ffmpeg's 1-31 scale, lower is better)
+gif_colors=$(qmap 0 -3.2 2 256)    # 80 and up -> 256
+webp_opts=(-quality "$quality"); (( quality < 100 )) || webp_opts=(-lossless 1 -quality 100)
+single=(); (( ! still )) || single=(-frames:v 1)   # a still AVIF, not a one-frame animation
 # GIF output only appears at the end (the palette needs every frame first)
 encode() {
     watch 85 100 "Encoding $format, frame %d of %d" count_encoded eta-started - -- "$@" \
@@ -737,21 +795,30 @@ encode() {
 case $format in
     gif)
         encode ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
-            "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
+            "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gif_colors[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
             -loop 0 -final_delay "$final_delay" -f gif "$output" ;;
     mp4)
         # H.264 has no alpha: transparent areas become black
         encode ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr \
             -vf "$resize,format=rgba,premultiply=inplace=1,format=yuv420p" \
-            -c:v libx264 -preset slow -crf 16 -c:a aac -b:a 192k -movflags +faststart -f mp4 "$output" ;;
+            -c:v libx264 -preset slow -crf "$crf_x264" -c:a aac -b:a 192k -movflags +faststart -f mp4 "$output" ;;
     webm)
         encode ffmpeg "${in[@]}" "${audio[@]}" -fps_mode vfr -vf "$resize" -pix_fmt yuva420p \
-            -c:v libvpx-vp9 -crf 18 -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k -f webm "$output" ;;
+            -c:v libvpx-vp9 -crf "$crf_vp9" -b:v 0 -row-mt 1 -auto-alt-ref 0 -c:a "$(encoder libopus && echo libopus || echo libvorbis)" -b:a 160k -f webm "$output" ;;
     avif)
         # AVIF stores transparency as a second AV1 stream
         encode ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
             "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]" -map "[c]" -map "[al]" \
-            -c:v libaom-av1 -crf 20 -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p -f avif "$output" ;;
+            -c:v libaom-av1 -crf "$crf_aom" -cpu-used 6 -row-mt 1 -pix_fmt:0 yuv444p "${single[@]}" -f avif "$output" ;;
+    png)
+        encode ffmpeg "${in[@]}" -vf "$resize" -frames:v 1 -update 1 -f image2 "$output" ;;
+    jpg)
+        # JPEG has no alpha: transparent areas become white
+        encode ffmpeg "${in[@]}" -filter_complex \
+            "color=white:s=${out_w}x${out_h},format=rgb24[bg];[0:v]$resize[fg];[bg][fg]overlay=shortest=1:format=auto,scale=out_range=full,format=yuv444p" \
+            -c:v mjpeg -q:v "$q_jpeg" -qmin 1 -color_range pc -frames:v 1 -update 1 -f image2 "$output" ;;
+    webp)
+        encode ffmpeg "${in[@]}" -vf "$resize" -c:v libwebp "${webp_opts[@]}" -frames:v 1 -f webp "$output" ;;
 esac
 
 progress_finish

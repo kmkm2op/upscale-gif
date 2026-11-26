@@ -23,6 +23,7 @@ param(
     [Alias('f')] [string]$Format,
     [Alias('g')] [string]$Gpu,
     [Alias('o')] [string]$Output,
+    [Alias('q')] [string]$Quality,
     [Alias('c')] [switch]$Check,
     [Alias('h')] [switch]$Help,
     # Report errors and completion in message boxes (used by the shortcuts)
@@ -35,11 +36,12 @@ $Inv = [Globalization.CultureInfo]::InvariantCulture
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $Title = 'Upscale GIF'
 $Usage = @'
-Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f gif|mp4|webm|avif] [-g gpu] [-o output] [file]
+Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f format] [-q quality%] [-g gpu] [-o output] [file]
        upscale-gif.ps1 -c    (show detected tools, models and GPUs)
-Anything not given on the command line is asked for in a settings window.
-Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos) to the chosen size.
-Every frame keeps its original timing; audio is kept for mp4/webm output.
+Anything not given on the command line is asked for in a settings window. Formats: gif, mp4,
+webm, avif, and for single images png, jpg, webp. -q: 1-100 (default 80; ignored for png).
+Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
+keeps its original timing, and audio is kept for mp4/webm output.
 '@
 
 $Desc = @{
@@ -78,8 +80,12 @@ $BundleBin = Join-Path $PSScriptRoot 'bin'
 $FmtDesc = @{
     gif = 'GIF'; webm = 'WebM (VP9, keeps transparency and audio)'
     avif = 'AVIF (AV1, keeps transparency)'; mp4 = 'MP4 (H.264, keeps audio, no transparency)'
+    png = 'PNG (lossless, keeps transparency)'; jpg = 'JPEG (small, no transparency)'; webp = 'WebP (keeps transparency)'
 }
-$Encoder = @{ gif = 'gif'; mp4 = 'libx264'; webm = 'libvpx-vp9'; avif = 'libaom-av1' }
+$Encoder = @{ gif = 'gif'; mp4 = 'libx264'; webm = 'libvpx-vp9'; avif = 'libaom-av1'; png = 'png'; jpg = 'mjpeg'; webp = 'libwebp' }
+$AnimFormats = 'gif', 'webm', 'avif', 'mp4'
+$ImageFormats = 'png', 'jpg', 'webp', 'avif', 'gif'   # offered when the input is a single image
+$Qualities = 100, 95, 90, 85, 80, 75, 70, 60, 50, 40, 30, 20, 10
 
 # --- Helpers ---------------------------------------------------------------------------
 # %APPDATA% (on Linux, ~/.config, which .NET reports as "" until it exists)
@@ -173,8 +179,8 @@ function Show-Message([string]$Text, [string]$Icon = 'Information', [string]$But
 function Select-InputFile([string]$Dir) {
     Use-Forms
     $d = New-Object Windows.Forms.OpenFileDialog
-    $d.Title = 'Choose an animation or video to upscale'
-    $d.Filter = 'Animations and videos|*.gif;*.webp;*.png;*.apng;*.avif;*.mp4;*.m4v;*.webm;*.mkv;*.mov|All files|*.*'
+    $d.Title = 'Choose an image, animation or video to upscale'
+    $d.Filter = 'Images, animations and videos|*.gif;*.webp;*.png;*.apng;*.avif;*.mp4;*.m4v;*.webm;*.mkv;*.mov;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff|All files|*.*'
     if ($Dir -and (Test-Path -LiteralPath $Dir -PathType Container)) { $d.InitialDirectory = $Dir }
     $o = New-Owner
     try { if ($d.ShowDialog($o) -eq 'OK') { return $d.FileName } } finally { $o.Dispose() }
@@ -692,7 +698,7 @@ function Show-Check {
         $v = (-split ((Lines (Invoke-Tool $script:FFmpeg @('-version') -Capture).Out) | Select-Object -First 1))[2]
         Write-Host "ffmpeg:         $script:FFmpeg ($v)"
         if (-not $script:FFprobe) { Write-Host 'ffprobe:        NOT FOUND (it should be next to ffmpeg)'; $ok = $false }
-        foreach ($f in 'gif', 'mp4', 'webm', 'avif') {
+        foreach ($f in 'gif', 'mp4', 'webm', 'avif', 'png', 'jpg', 'webp') {
             $e = $Encoder[$f]
             if ($script:Encoders.Contains($e)) { Write-Host ('  {0,-14} yes ({1})' -f "$f output:", $e) }
             else { Write-Host ('  {0,-14} no (ffmpeg lacks {1})' -f "$f output:", $e); $ok = $false }
@@ -741,24 +747,26 @@ function Invoke-Main {
     if (-not $script:Models) { Fail "found $script:Upscayl but no models folder next to it; set UPSCAYL_MODELS" }
     $gpu = if ($Gpu) { $Gpu.ToLowerInvariant() } else { '' }
     # The output name's extension picks the format when -f isn't given
-    $format = if ($Format) { $Format.ToLowerInvariant() } else { '' }
+    $format = if ($Format) { $Format.ToLowerInvariant() -replace '^jpeg$', 'jpg' } else { '' }
     if ($Output) {
-        $ext = [IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
-        if ($ext -match '^(gif|mp4|webm|avif)$') {
+        $ext = [IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant() -replace '^jpeg$', 'jpg'
+        if ($ext -match '^(gif|mp4|webm|avif|png|jpg|webp)$') {
             if ($format -and $format -ne $ext) { Fail "output name ends in .$ext but the format is $format" }
             $format = $ext
         }
     }
     if ($gpu -and $gpu -notmatch '^(auto|\d+(,\d+)*)$') { Fail 'GPU must be auto, a number or a list like 0,1 (see -c)' }
+    $quality = $Quality -replace '%$', ''
+    if ($quality -and ($quality -notmatch '^\d+$' -or [int]$quality -lt 1 -or [int]$quality -gt 100)) { Fail 'quality must be 1 to 100' }
 
     # Remembered choices from the last run
     $confDir = Join-Path ((Get-AppData)) 'upscale-gif'
     $conf = Join-Path $confDir 'settings.json'
-    $last = @{ model = ''; format = 'gif'; dir = [Environment]::GetFolderPath('MyPictures') }
+    $last = @{ model = ''; format = 'gif'; imageFormat = ''; quality = '80'; dir = [Environment]::GetFolderPath('MyPictures') }
     if (Test-Path -LiteralPath $conf) {
         try {
             $saved = Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json
-            foreach ($k in 'model', 'format', 'dir') { if ($saved.PSObject.Properties[$k] -and $saved.$k) { $last[$k] = [string]$saved.$k } }
+            foreach ($k in 'model', 'format', 'imageFormat', 'quality', 'dir') { if ($saved.PSObject.Properties[$k] -and $saved.$k) { $last[$k] = [string]$saved.$k } }
         } catch { }
     }
     if (-not $script:ModelDir.Contains($last.model)) {
@@ -814,6 +822,11 @@ function Invoke-Main {
         $srcW = [long][math]::Round($srcW * [long]$Matches[1] / [long]$Matches[2], [MidpointRounding]::AwayFromZero)
     }
     $rotation = ToNum ([string]$info['rotation'])
+    # Photos keep their orientation (EXIF) on the frame instead of the stream
+    if (-not $rotation) {
+        $rotation = ToNum ((Lines (Invoke-Tool $script:FFprobe @('-v', 'error', '-select_streams', "$vidx", '-read_intervals', '%+#1',
+            '-show_entries', 'frame_side_data=rotation', '-of', 'default=nw=1:nk=1', $inputFile) -Capture).Out) | Select-Object -First 1)
+    }
     if ($null -ne $rotation -and ([long]$rotation) % 180 -ne 0) { $t = $srcW; $srcW = $srcH; $srcH = $t }
     $fallback = 0.1
     $rate = ([string]$info['avg_frame_rate']).Split('/')
@@ -861,10 +874,24 @@ function Invoke-Main {
     $spaceNote = "Needs ~$(Human $need) of temporary space ($(Human $free) free)"
 
     $model = $Model; $width = $Width; $height = $Height
+    $x = [char]0xD7   # multiplication sign
+
+    # A single frame is a still image: it can also be saved as png, jpg or webp
+    $still = $count -eq 1
+    if ($still) {
+        $formats = $ImageFormats
+        $inExt = [IO.Path]::GetExtension($inputFile).TrimStart('.').ToLowerInvariant() -replace '^jpeg$', 'jpg'
+        $defaultFormat = if ($last.imageFormat) { $last.imageFormat } elseif ($ImageFormats -contains $inExt) { $inExt } else { 'png' }
+        $about = "$srcW $x $srcH, still image"
+    } else {
+        $formats = $AnimFormats
+        $defaultFormat = $last.format
+        $about = "$srcW $x $srcH, $count frames, ${total}s, ~$fps fps"
+    }
+    if ($formats -notcontains $defaultFormat) { $defaultFormat = $formats[0] }
 
     # --- Settings window (only for what wasn't given on the command line) ---
     if (-not $model -or -not $format -or (-not $width -and -not $height)) {
-        $x = [char]0xD7   # multiplication sign
         $modelValues = @(); $modelItems = @()
         foreach ($m in @($last.model) + @($ModelOrder) + @($script:ModelList)) {
             if (-not $m -or -not $script:ModelDir.Contains($m) -or $modelValues -contains $m) { continue }
@@ -887,7 +914,7 @@ function Invoke-Main {
         }
 
         $formatValues = @(); $formatItems = @()
-        foreach ($f in @($last.format, 'gif', 'webm', 'avif', 'mp4')) {
+        foreach ($f in @($defaultFormat) + @($formats)) {
             if (-not $Encoder.Contains($f) -or -not $script:Encoders.Contains($Encoder[$f]) -or $formatValues -contains $f) { continue }
             $formatValues += $f; $formatItems += "$f - $($FmtDesc[$f])"
         }
@@ -926,8 +953,14 @@ function Invoke-Main {
             $fields += @{ Label = 'Custom width in pixels (optional)'; Tip = $customHelp }; $keys += 'custom'
         }
         if (-not $format) { $fields += @{ Label = 'Format'; Items = $formatItems }; $keys += 'format' }
+        $qualityValues = @()
+        if (-not $quality -and $format -ne 'png') {
+            foreach ($q in @([int]$last.quality) + @($Qualities)) { if ($qualityValues -notcontains $q) { $qualityValues += $q } }
+            $label = 'Quality (higher is better but larger)'; if ($still) { $label += ', not used for PNG' }
+            $fields += @{ Label = $label; Items = @($qualityValues | ForEach-Object { "$_%" }) }; $keys += 'quality'
+        }
         if ($gpuItems) { $fields += @{ Label = 'GPU'; Items = $gpuItems }; $keys += 'gpu' }
-        $text = "$name`n$srcW $x $srcH, $count frames, ${total}s, ~$fps fps`n$spaceNote$warn"
+        $text = "$name`n$about`n$spaceNote$warn"
         if ($askSize) { $text += "`n`n$customHelp" }
         $result = Show-Settings $text $fields
         if ($null -eq $result) { return 0 }
@@ -937,6 +970,7 @@ function Invoke-Main {
         if (-not $model) { $model = $modelValues[$answer.model] }
         if (-not $format) { $format = $formatValues[$answer.format] }
         if ($gpuItems) { $gpu = $gpuValues[$answer.gpu] }
+        if ($qualityValues) { $quality = [string]$qualityValues[$answer.quality] }
         if ($askSize) {
             $custom = [string]$answer.custom -replace '\s', ''
             if ($custom) { $width = $custom } else { $width = [string]$sizeValues[$answer.size] }
@@ -949,7 +983,13 @@ function Invoke-Main {
     $scale = Get-ModelScale $model
     $maxW = $srcW * $scale; $need = & $spaceFor $scale
     $spaceNote = "Needs ~$(Human $need) of temporary space ($(Human $free) free)"
-    if ($format -notmatch '^(gif|mp4|webm|avif)$') { Fail "unsupported format: $format" }
+    if (-not $format) { $format = $defaultFormat }
+    if (-not $quality) { $quality = '80' }
+    $q = [int]$quality
+    if ($format -notmatch '^(gif|mp4|webm|avif|png|jpg|webp)$') { Fail "unsupported format: $format" }
+    if (-not $still -and $format -match '^(png|jpg|webp)$') {
+        Fail "$format output is for single images, and $name has $count frames (use gif, webm, avif or mp4)"
+    }
     if (-not $script:Encoders.Contains($Encoder[$format])) { Fail "this ffmpeg build can't encode $format (missing $($Encoder[$format]))" }
     if ($width) {
         if ($width -notmatch '^\d+$' -or [long]$width -le 0) { Fail 'width must be a whole number' }
@@ -974,11 +1014,15 @@ function Invoke-Main {
 
     try {
         if (-not (Test-Path -LiteralPath $confDir)) { [void](New-Item -ItemType Directory -Path $confDir) }
-        @{ model = $model; format = $format; dir = (Split-Path $inputFile) } | ConvertTo-Json | Set-Content -LiteralPath $conf -Encoding UTF8
+        if ($still) { $last.imageFormat = $format } else { $last.format = $format }
+        if ($format -ne 'png') { $last.quality = $quality }
+        @{ model = $model; format = $last.format; imageFormat = $last.imageFormat; quality = $last.quality; dir = (Split-Path $inputFile) } |
+            ConvertTo-Json | Set-Content -LiteralPath $conf -Encoding UTF8
     } catch { }
 
-    Write-Host "Input:  ${srcW}x${srcH}, $count frames, ${total}s, ~$fps fps"
-    Write-Host "Output: ${outW}x${outH} $format, model $model (${scale}x), GPU $gpu"
+    Write-Host "Input:  $($about -replace " $x ", 'x')"
+    $qNote = if ($format -eq 'png') { '' } else { ", quality $q%" }
+    Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), GPU $gpu"
 
     # Remove work folders left behind by runs that were killed (e.g. the window was closed)
     Get-ChildItem -LiteralPath $workRoot -Directory -Filter 'upscale-gif.*' -ErrorAction SilentlyContinue |
@@ -1060,26 +1104,45 @@ function Invoke-Main {
         $audio = @()
         if ($null -ne $first -and $null -ne $start -and $first - $start -gt 0.001) { $audio += '-ss', (Num ($first - $start)) }
         $audio += '-i', $inputFile, '-map', '0:v', '-map', '1:a:0?'
+        # Quality (1-100) on each encoder's own scale; 80 gives the earlier defaults. 100 is
+        # lossless for WebP, 256 colours for GIF from 80 up.
+        $qmap = { param($a, $b, $lo, $hi) [int][math]::Min($hi, [math]::Max($lo, [math]::Floor($a - $q * $b + 0.5))) }
+        $crfX264 = & $qmap 51 0.4375 0 51; $crfVp9 = & $qmap 63 0.5625 0 63; $crfAom = & $qmap 63 0.5375 0 63
+        $qJpeg = & $qmap 31 0.3 1 31; $gifColors = & $qmap 0 -3.2 2 256
+        $webpOpts = if ($q -lt 100) { @('-quality', "$q") } else { @('-lossless', '1', '-quality', '100') }
+        $single = if ($still) { @('-frames:v', '1') } else { @() }   # a still AVIF, not a one-frame animation
         switch ($format) {
             'gif' {
                 $a = $in + @('-fps_mode', 'vfr', '-filter_complex',
-                    "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128",
+                    "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gifColors[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128",
                     '-loop', '0', '-final_delay', $finalDelay, '-f', 'gif', $outFile)
             }
             'mp4' {
                 # H.264 has no alpha: transparent areas become black
                 $a = $in + $audio + @('-fps_mode', 'vfr', '-vf', "$resize,format=rgba,premultiply=inplace=1,format=yuv420p",
-                    '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', $outFile)
+                    '-c:v', 'libx264', '-preset', 'slow', '-crf', "$crfX264", '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', $outFile)
             }
             'webm' {
                 $opus = if ($script:Encoders.Contains('libopus')) { 'libopus' } else { 'libvorbis' }
                 $a = $in + $audio + @('-fps_mode', 'vfr', '-vf', $resize, '-pix_fmt', 'yuva420p',
-                    '-c:v', 'libvpx-vp9', '-crf', '18', '-b:v', '0', '-row-mt', '1', '-auto-alt-ref', '0', '-c:a', $opus, '-b:a', '160k', '-f', 'webm', $outFile)
+                    '-c:v', 'libvpx-vp9', '-crf', "$crfVp9", '-b:v', '0', '-row-mt', '1', '-auto-alt-ref', '0', '-c:a', $opus, '-b:a', '160k', '-f', 'webm', $outFile)
             }
             'avif' {
                 # AVIF stores transparency as a second AV1 stream
                 $a = $in + @('-fps_mode', 'vfr', '-filter_complex', "[0:v]$resize,format=yuva444p,split[c][a];[a]alphaextract[al]",
-                    '-map', '[c]', '-map', '[al]', '-c:v', 'libaom-av1', '-crf', '20', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt:0', 'yuv444p', '-f', 'avif', $outFile)
+                    '-map', '[c]', '-map', '[al]', '-c:v', 'libaom-av1', '-crf', "$crfAom", '-cpu-used', '6', '-row-mt', '1', '-pix_fmt:0', 'yuv444p') + $single + @('-f', 'avif', $outFile)
+            }
+            'png' {
+                $a = $in + @('-vf', $resize, '-frames:v', '1', '-update', '1', '-f', 'image2', $outFile)
+            }
+            'jpg' {
+                # JPEG has no alpha: transparent areas become white
+                $a = $in + @('-filter_complex',
+                    "color=white:s=${outW}x${outH},format=rgb24[bg];[0:v]$resize[fg];[bg][fg]overlay=shortest=1:format=auto,scale=out_range=full,format=yuv444p",
+                    '-c:v', 'mjpeg', '-q:v', "$qJpeg", '-qmin', '1', '-color_range', 'pc', '-frames:v', '1', '-update', '1', '-f', 'image2', $outFile)
+            }
+            'webp' {
+                $a = $in + @('-vf', $resize, '-c:v', 'libwebp') + $webpOpts + @('-frames:v', '1', '-f', 'webp', $outFile)
             }
         }
         # GIF output only appears at the end (the palette needs every frame first)
