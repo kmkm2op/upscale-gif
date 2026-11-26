@@ -50,7 +50,18 @@ $Desc = @{
     'remacri-4x'           = 'Natural and sharp'
     'ultrasharp-4x'        = 'Very sharp'
     'ultramix-balanced-4x' = 'Balance of sharp and smooth'
+    'realesrgan-x4plus' = 'General purpose, best quality'
+    'RealESRGAN_General_x4_v3' = 'General purpose, fast'
+    'realesrgan-x4plus-anime' = 'Digital art, anime, cartoons'
+    'realesr-animevideov3-x4' = 'Anime and cartoon video, fastest'
+    'realesr-animevideov3-x3' = 'Anime and cartoon video, fastest, 3x'
+    'realesr-animevideov3-x2' = 'Anime and cartoon video, fastest, 2x'
 }
+# Order of the model list, and the default (the first one available)
+$ModelOrder = 'upscayl-standard-4x', 'realesrgan-x4plus', 'RealESRGAN_General_x4_v3', 'upscayl-lite-4x', 'digital-art-4x',
+    'realesrgan-x4plus-anime', 'realesr-animevideov3-x4', 'realesr-animevideov3-x3', 'realesr-animevideov3-x2'
+# Release packages carry upscayl-bin, ffmpeg and ffprobe in bin\ and the models in models\
+$BundleBin = Join-Path $PSScriptRoot 'bin'
 $FmtDesc = @{
     gif = 'GIF'; webm = 'WebM (VP9, keeps transparency and audio)'
     avif = 'AVIF (AV1, keeps transparency)'; mp4 = 'MP4 (H.264, keeps audio, no transparency)'
@@ -58,6 +69,12 @@ $FmtDesc = @{
 $Encoder = @{ gif = 'gif'; mp4 = 'libx264'; webm = 'libvpx-vp9'; avif = 'libaom-av1' }
 
 # --- Helpers ---------------------------------------------------------------------------
+# %APPDATA% (on Linux, ~/.config, which .NET reports as "" until it exists)
+function Get-AppData {
+    $d = [Environment]::GetFolderPath('ApplicationData', 'Create')
+    if (-not $d) { $d = Join-Path $HOME '.config' }
+    $d
+}
 function Fail([string]$Message) { throw (New-Object Management.Automation.RuntimeException $Message) }
 function Num([double]$X, [string]$Fmt = 'F6') { $X.ToString($Fmt, $Inv) }
 function ToNum([string]$S) {
@@ -304,7 +321,7 @@ function Find-Program([string]$Name, [string[]]$Dirs) {
     return $null
 }
 function Find-FFmpeg {
-    $dirs = @($PSScriptRoot)
+    $dirs = @($BundleBin, $PSScriptRoot)
     if ($OnWindows) {
         $dirs += "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
         $dirs += @(Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\*FFmpeg*\*\bin" -Directory -ErrorAction SilentlyContinue |
@@ -338,12 +355,15 @@ function Get-UpscaylInstallDirs {
     $dirs + @("$env:ProgramFiles\Upscayl", "$env:LOCALAPPDATA\Programs\Upscayl", "${env:ProgramFiles(x86)}\Upscayl",
         "$env:USERPROFILE\scoop\apps\upscayl\current")
 }
-function Find-Upscayl {
-    if ($env:UPSCAYL_BIN) {
+# The bundled upscayl-bin comes first, unless -Installed is given
+function Find-Upscayl([switch]$Installed) {
+    if ($env:UPSCAYL_BIN -and -not $Installed) {
         if (Test-Upscayl $env:UPSCAYL_BIN) { return (Resolve-Path -LiteralPath $env:UPSCAYL_BIN).ProviderPath }
         return $null
     }
-    $candidates = @(Get-Command upscayl-bin, upscayl-ncnn -CommandType Application -ErrorAction SilentlyContinue |
+    $candidates = @()
+    if (-not $Installed) { $candidates += (Join-Path $BundleBin 'upscayl-bin.exe'), (Join-Path $BundleBin 'upscayl-bin') }
+    $candidates += @(Get-Command upscayl-bin, upscayl-ncnn -CommandType Application -ErrorAction SilentlyContinue |
         ForEach-Object { $_.Source })
     $candidates += @(Get-UpscaylInstallDirs | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'resources\bin\upscayl-bin.exe' })
     foreach ($c in $candidates) { if (Test-Upscayl $c) { return (Resolve-Path -LiteralPath $c).ProviderPath } }
@@ -572,7 +592,7 @@ public static class UpscaylLocalStorage {
 }
 '@
 function Get-UpscaylSettings([string[]]$Names) {
-    $dirs = @(Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Upscayl')
+    $dirs = @(Join-Path ((Get-AppData)) 'Upscayl')
     if ($OnWindows) {
         $dirs += @(Get-ChildItem "$env:LOCALAPPDATA\Packages\*Upscayl*\LocalCache\Roaming\Upscayl" -Directory -ErrorAction SilentlyContinue |
             ForEach-Object { $_.FullName })
@@ -604,7 +624,8 @@ function Add-Models([string]$Dir) {
         }
     }
 }
-function Test-Custom([string]$Name) { $script:ModelDir[$Name] -ne $script:Models }
+function Test-Custom([string]$Name) { $script:CustomModels -and $script:ModelDir[$Name] -eq $script:CustomModels -and -not $Desc.Contains($Name) }
+function Test-Bundled { $script:Upscayl -and (Split-Path $script:Upscayl) -eq $BundleBin }
 # GPUs as upscayl-bin numbers them ("id name" per line): it lists them before failing on
 # the missing input.
 function Get-Gpus {
@@ -629,15 +650,19 @@ function Get-Encoders {
 # Prints the detected setup; returns whether everything needed was found
 function Show-Check {
     $ok = $true
-    $builtin = @(); $custom = @()
+    $builtin = @(); $app = @(); $custom = @()
     foreach ($m in $script:ModelList) {
         $s = Get-ModelScale $m; $f = $m; if ($s -ne 4) { $f += " (${s}x)" }
-        if (Test-Custom $m) { $custom += $f } else { $builtin += $f }
+        if ($script:ModelDir[$m] -eq $script:Models) { $builtin += $f }
+        elseif ($script:ModelDir[$m] -eq $script:AppModels) { $app += $f }
+        else { $custom += $f }
     }
-    if ($script:Upscayl) { Write-Host "Upscayl binary: $script:Upscayl" }
+    if (Test-Bundled) { Write-Host "Upscayl binary: $script:Upscayl (bundled)" }
+    elseif ($script:Upscayl) { Write-Host "Upscayl binary: $script:Upscayl" }
     else { Write-Host 'Upscayl binary: NOT FOUND (install Upscayl or set UPSCAYL_BIN)'; $ok = $false }
     if ($script:Models) { Write-Host "Models folder:  $script:Models"; Write-Host "Models:         $($builtin -join ' ')" }
     else { Write-Host 'Models folder:  NOT FOUND (set UPSCAYL_MODELS)'; $ok = $false }
+    if ($script:AppModels) { Write-Host "Upscayl app:    $script:AppModels"; Write-Host "                $($app -join ' ')" }
     $src = if ($env:UPSCAYL_CUSTOM_MODELS) { 'UPSCAYL_CUSTOM_MODELS' } else { 'Upscayl settings' }
     if (-not $script:CustomModels) { Write-Host "Custom models:  none (choose a folder in Upscayl's settings, or set UPSCAYL_CUSTOM_MODELS)" }
     elseif (-not (Test-Path -LiteralPath $script:CustomModels -PathType Container)) { Write-Host "Custom models:  $script:CustomModels (from $src) is missing" }
@@ -678,12 +703,20 @@ function Invoke-Main {
     $script:FFmpeg, $script:FFprobe = Find-FFmpeg
     $script:Upscayl = Find-Upscayl
     $script:Models = if ($script:Upscayl) { Find-Models $script:Upscayl } else { $null }
+    # With the bundled upscaler, an installed Upscayl app still contributes its own models
+    $script:AppModels = $null
+    if ($script:Models -and (Test-Bundled) -and -not $env:UPSCAYL_MODELS) {
+        $app = Find-Upscayl -Installed
+        if ($app) { $script:AppModels = Find-Models $app }
+        if ($script:AppModels -eq $script:Models) { $script:AppModels = $null }
+    }
     $settings = Get-UpscaylSettings @('customModelsPath', 'gpuId')
     $script:UpscaylGpu = $settings[1]
     $script:CustomModels = if ($env:UPSCAYL_CUSTOM_MODELS) { $env:UPSCAYL_CUSTOM_MODELS } else { $settings[0] }
     $script:ModelDir = @{}
     $script:ModelList = New-Object Collections.Generic.List[string]
     if ($script:Models) { Add-Models $script:Models }
+    if ($script:AppModels) { Add-Models $script:AppModels }
     if ($script:CustomModels -and (Test-Path -LiteralPath $script:CustomModels -PathType Container)) { Add-Models $script:CustomModels }
     $script:Encoders = Get-Encoders
 
@@ -706,14 +739,17 @@ function Invoke-Main {
     if ($gpu -and $gpu -notmatch '^(auto|\d+(,\d+)*)$') { Fail 'GPU must be auto, a number or a list like 0,1 (see -c)' }
 
     # Remembered choices from the last run
-    $confDir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'upscale-gif'
+    $confDir = Join-Path ((Get-AppData)) 'upscale-gif'
     $conf = Join-Path $confDir 'settings.json'
-    $last = @{ model = 'upscayl-standard-4x'; format = 'gif'; dir = [Environment]::GetFolderPath('MyPictures') }
+    $last = @{ model = ''; format = 'gif'; dir = [Environment]::GetFolderPath('MyPictures') }
     if (Test-Path -LiteralPath $conf) {
         try {
             $saved = Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json
             foreach ($k in 'model', 'format', 'dir') { if ($saved.PSObject.Properties[$k] -and $saved.$k) { $last[$k] = [string]$saved.$k } }
         } catch { }
+    }
+    if (-not $script:ModelDir.Contains($last.model)) {
+        $last.model = @(@($ModelOrder | Where-Object { $script:ModelDir.Contains($_) }) + @($script:ModelList))[0]
     }
 
     # --- Choose file ---
@@ -817,12 +853,13 @@ function Invoke-Main {
     if (-not $model -or -not $format -or (-not $width -and -not $height)) {
         $x = [char]0xD7   # multiplication sign
         $modelValues = @(); $modelItems = @()
-        foreach ($m in @($last.model) + @($script:ModelList)) {
-            if (-not $script:ModelDir.Contains($m) -or $modelValues -contains $m) { continue }
-            if (Test-Custom $m) {
-                $item = "$m - Custom model"
-                $s = Get-ModelScale $m; if ($s -ne 4) { $item += ", $s$x" }
-            } elseif ($Desc.Contains($m)) { $item = "$m - $($Desc[$m])" } else { $item = $m }
+        foreach ($m in @($last.model) + @($ModelOrder) + @($script:ModelList)) {
+            if (-not $m -or -not $script:ModelDir.Contains($m) -or $modelValues -contains $m) { continue }
+            if ($Desc.Contains($m)) { $item = "$m - $($Desc[$m])" }
+            else {
+                $item = $m; if (Test-Custom $m) { $item += ' - Custom model' }
+                $s = Get-ModelScale $m; if ($s -ne 4) { $item += $(if (Test-Custom $m) { ', ' } else { ' - ' }) + "$s$x" }
+            }
             $modelValues += $m; $modelItems += $item
         }
 

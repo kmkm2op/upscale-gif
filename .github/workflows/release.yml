@@ -1,0 +1,50 @@
+# Builds the release packages and publishes them when a version tag (v1.2.3) is pushed.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build (a draft release is created)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Ubuntu 22.04 matches the oldest glibc the bundled upscayl-bin supports
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          v='${{ inputs.version }}'
+          [ -n "$v" ] || v=${GITHUB_REF_NAME#v}
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake pkg-config python3 xz-utils bzip2
+
+      - name: Cache downloads and builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/upscale-gif-build
+          key: build-${{ hashFiles('packaging/sources.txt', 'packaging/build.sh') }}
+          restore-keys: build-
+
+      - name: Build
+        run: packaging/build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ steps.version.outputs.version }}
+          draft=(); [ "${{ github.event_name }}" = workflow_dispatch ] && draft=(--draft)
+          gh release create "v$v" "${draft[@]}" --title "upscale-gif $v" --notes-file packaging/release-notes.md \
+            dist/upscale-gif-$v-linux-x86_64.tar.gz dist/upscale-gif-$v-windows-x64.zip dist/upscale-gif-$v-sources.tar.gz

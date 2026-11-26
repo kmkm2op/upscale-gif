@@ -8,12 +8,14 @@
 # Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos) to the chosen size.
 # Every frame keeps its original timing; audio is kept for mp4/webm output.
 #
-# Requirements: bash 4+, ffmpeg/ffprobe 7+ (8+ for animated WebP input), GNU coreutils,
-# Upscayl (any install: distro package, .deb/.rpm, Snap, Flatpak) and, for the windows,
-# zenity (kdialog is used for the file picker when available). python3 is used to read
-# Upscayl's own settings (custom models folder, GPU ID); without it they are ignored.
-# Upscayl is found automatically; to use another install set UPSCAYL_BIN (path to
-# upscayl-bin) and optionally UPSCAYL_MODELS (folder of .param/.bin models).
+# Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the windows, zenity
+# (kdialog is used for the file picker when available). The release packages include
+# Upscayl's upscaler, models and ffmpeg in bin/ and models/ next to this script; without
+# them it uses ffmpeg/ffprobe 7+ (8+ for animated WebP input) from PATH and an installed
+# Upscayl (distro package, .deb/.rpm, Snap, Flatpak). python3 is used to read Upscayl's
+# own settings (custom models folder, GPU ID); without it they are ignored.
+# To use another Upscayl install set UPSCAYL_BIN (path to upscayl-bin) and optionally
+# UPSCAYL_MODELS (folder of .param/.bin models).
 # An AppImage can be used after extracting it: ./Upscayl.AppImage --appimage-extract,
 # then UPSCAYL_BIN=squashfs-root/resources/bin/upscayl-bin.
 # Custom models come from the folder chosen in Upscayl (Settings > Custom models folder),
@@ -24,6 +26,10 @@ set -euo pipefail
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
 WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
 model="" format="" width="" height="" output="" input="" gpu=""
+# Release packages carry upscayl-bin, ffmpeg and ffprobe in bin/ and the models in models/
+SELF_DIR=$(dirname "$(realpath "$0")")
+BUNDLE_BIN=$SELF_DIR/bin
+[[ -x $BUNDLE_BIN/ffmpeg && -x $BUNDLE_BIN/ffprobe ]] && PATH=$BUNDLE_BIN:$PATH
 
 declare -A DESC=(
     [upscayl-standard-4x]="General purpose"
@@ -33,7 +39,16 @@ declare -A DESC=(
     [remacri-4x]="Natural and sharp"
     [ultrasharp-4x]="Very sharp"
     [ultramix-balanced-4x]="Balance of sharp and smooth"
+    [realesrgan-x4plus]="General purpose, best quality"
+    [RealESRGAN_General_x4_v3]="General purpose, fast"
+    [realesrgan-x4plus-anime]="Digital art, anime, cartoons"
+    [realesr-animevideov3-x4]="Anime and cartoon video, fastest"
+    [realesr-animevideov3-x3]="Anime and cartoon video, fastest, 3×"
+    [realesr-animevideov3-x2]="Anime and cartoon video, fastest, 2×"
 )
+# Order of the model list, and the default (the first one available)
+MODEL_ORDER=(upscayl-standard-4x realesrgan-x4plus RealESRGAN_General_x4_v3 upscayl-lite-4x digital-art-4x
+    realesrgan-x4plus-anime realesr-animevideov3-x4 realesr-animevideov3-x3 realesr-animevideov3-x2)
 declare -A FMT_DESC=(
     [gif]="GIF" [webm]="WebM (VP9, keeps transparency and audio)"
     [avif]="AVIF (AV1, keeps transparency)" [mp4]="MP4 (H.264, keeps audio, no transparency)"
@@ -57,19 +72,23 @@ is_upscayl() {
     out=$(timeout 10 "$1" -h 2>&1) || true    # -h exits non-zero
     [[ $out == *"-z model-scale"* ]]
 }
+# find_upscayl [installed]: the bundled upscayl-bin comes first unless "installed" is given
 find_upscayl() {
-    local c
-    if [[ -n ${UPSCAYL_BIN:-} ]]; then
+    local c bundled
+    bundled=$(realpath -m "$BUNDLE_BIN/upscayl-bin")
+    if [[ -n ${UPSCAYL_BIN:-} && -z ${1:-} ]]; then
         is_upscayl "$UPSCAYL_BIN" || return 1
         realpath "$UPSCAYL_BIN"; return
     fi
-    for c in "$(command -v upscayl-bin 2>/dev/null)" "$(command -v upscayl-ncnn 2>/dev/null)" \
+    for c in "$bundled" "$(command -v upscayl-bin 2>/dev/null)" "$(command -v upscayl-ncnn 2>/dev/null)" \
         /usr/share/upscayl/bin/upscayl-bin /usr/lib/upscayl/resources/bin/upscayl-bin \
         /opt/Upscayl/resources/bin/upscayl-bin /opt/upscayl/resources/bin/upscayl-bin \
         /snap/upscayl/current/resources/bin/upscayl-bin \
         $(find /var/lib/flatpak/app/org.upscayl.Upscayl "$HOME/.local/share/flatpak/app/org.upscayl.Upscayl" \
             -path '*/active/*' -name upscayl-bin -type f 2>/dev/null); do
-        [[ -n $c ]] && is_upscayl "$c" && { realpath "$c"; return; }
+        [[ -n $c ]] || continue
+        [[ -n ${1:-} && $(realpath -m "$c") == "$bundled" ]] && continue
+        is_upscayl "$c" && { realpath "$c"; return; }
     done
     return 1
 }
@@ -87,6 +106,12 @@ find_models() {
 UPSCAYL=$(find_upscayl) || UPSCAYL=""
 MODELS=""
 [[ -n $UPSCAYL ]] && MODELS=$(find_models "$UPSCAYL") || true
+# With the bundled upscaler, an installed Upscayl app still contributes its own models
+APP_MODELS=""
+if [[ -n $MODELS && $UPSCAYL == "$(realpath -m "$BUNDLE_BIN/upscayl-bin")" && -z ${UPSCAYL_MODELS:-} ]]; then
+    app=$(find_upscayl installed) && APP_MODELS=$(find_models "$app") || true
+    [[ $APP_MODELS != "$MODELS" ]] || APP_MODELS=""
+fi
 
 # --- Upscayl's own settings ---------------------------------------------------------------
 # The Upscayl app keeps its settings in Chromium localStorage, a LevelDB database whose
@@ -224,8 +249,9 @@ add_models() {
     done
 }
 [[ -n $MODELS ]] && add_models "$MODELS"
+[[ -n $APP_MODELS ]] && add_models "$APP_MODELS"
 [[ -n $CUSTOM_MODELS && -d $CUSTOM_MODELS ]] && add_models "$CUSTOM_MODELS"
-is_custom() { [[ ${MODEL_DIR[$1]:-} != "$MODELS" ]]; }
+is_custom() { [[ -n $CUSTOM_MODELS && ${MODEL_DIR[$1]:-} == "$CUSTOM_MODELS" && -z ${DESC[$1]:-} ]]; }
 # Same rule as Upscayl: names with x2/2x or x3/3x are 2x/3x models, everything else 4x
 model_scale() {
     case ${1,,} in *x2* | *2x*) echo 2 ;; *x3* | *3x*) echo 3 ;; *) echo 4 ;; esac
@@ -244,14 +270,21 @@ encoder() { ffmpeg -hide_banner -encoders 2>/dev/null | awk '{ print $2 }' | gre
 declare -A ENCODER=([gif]=gif [mp4]=libx264 [webm]=libvpx-vp9 [avif]=libaom-av1)
 
 check() {
-    local ok=0 f m src line builtin=() custom=()
+    local ok=0 f m src line builtin=() app=() custom=()
     for m in "${MODEL_LIST[@]}"; do
         f=$m; (( $(model_scale "$m") == 4 )) || f+=" ($(model_scale "$m")×)"
-        if is_custom "$m"; then custom+=("$f"); else builtin+=("$f"); fi
+        case ${MODEL_DIR[$m]} in
+            "$MODELS") builtin+=("$f") ;; "$APP_MODELS") app+=("$f") ;; *) custom+=("$f") ;;
+        esac
     done
-    echo "Upscayl binary: ${UPSCAYL:-NOT FOUND (install Upscayl or set UPSCAYL_BIN)}"; [[ -n $UPSCAYL ]] || ok=1
+    if [[ -n $UPSCAYL && $UPSCAYL == "$(realpath -m "$BUNDLE_BIN/upscayl-bin")" ]]; then
+        echo "Upscayl binary: $UPSCAYL (bundled)"
+    else
+        echo "Upscayl binary: ${UPSCAYL:-NOT FOUND (install Upscayl or set UPSCAYL_BIN)}"; [[ -n $UPSCAYL ]] || ok=1
+    fi
     echo "Models folder:  ${MODELS:-NOT FOUND (set UPSCAYL_MODELS)}"; [[ -n $MODELS ]] || ok=1
     [[ -n $MODELS ]] && echo "Models:         ${builtin[*]}"
+    [[ -z $APP_MODELS ]] || { echo "Upscayl app:    $APP_MODELS"; echo "                ${app[*]}"; }
     src="Upscayl settings"; [[ -n ${UPSCAYL_CUSTOM_MODELS:-} ]] && src=UPSCAYL_CUSTOM_MODELS
     if [[ -z $CUSTOM_MODELS ]]; then
         echo "Custom models:  none (choose a folder in Upscayl's settings, or set UPSCAYL_CUSTOM_MODELS)"
@@ -267,7 +300,7 @@ check() {
     echo "  default: ${upscayl_gpu:-auto}${upscayl_gpu:+ (from Upscayl settings)}"
     for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
     if have ffmpeg; then
-        echo "ffmpeg:         $(ffmpeg -version | head -1 | cut -d' ' -f3)"
+        echo "ffmpeg:         $(command -v ffmpeg) ($(ffmpeg -version | head -1 | cut -d' ' -f3))"
         for f in gif mp4 webm avif; do
             if encoder "${ENCODER[$f]}"; then printf '  %-14s yes (%s)\n' "$f output:" "${ENCODER[$f]}"
             else printf '  %-14s no (ffmpeg lacks %s)\n' "$f output:" "${ENCODER[$f]}"; ok=1; fi
@@ -321,8 +354,12 @@ for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not instal
 [[ -z $gpu || $gpu =~ ^(auto|[0-9]+(,[0-9]+)*)$ ]] || die "GPU must be auto, a number or a list like 0,1 (see -c)"
 
 # Remembered choices from the last run
-last_model=upscayl-standard-4x last_format=gif last_dir=$HOME
+last_model="" last_format=gif last_dir=$HOME
 [[ -f $CONF ]] && source "$CONF"
+if [[ -z $last_model || -z ${MODEL_DIR[$last_model]:-} ]]; then
+    last_model=${MODEL_LIST[0]:-}
+    for m in "${MODEL_ORDER[@]}"; do [[ -z ${MODEL_DIR[$m]:-} ]] || { last_model=$m; break; }; done
+fi
 
 # --- Choose file -------------------------------------------------------------------
 if [[ -z $input ]]; then
@@ -402,13 +439,13 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     gui || die "missing -m/-f/-w options (and no desktop session for the settings window)"
 
     model_items=()
-    for m in "$last_model" "${MODEL_LIST[@]}"; do
-        [[ -n ${MODEL_DIR[$m]:-} ]] || continue
-        if is_custom "$m"; then
-            item="$m — Custom model"
-            (( $(model_scale "$m") == 4 )) || item+=", $(model_scale "$m")×"
+    for m in "$last_model" "${MODEL_ORDER[@]}" "${MODEL_LIST[@]}"; do
+        [[ -n $m && -n ${MODEL_DIR[$m]:-} ]] || continue
+        if [[ -n ${DESC[$m]:-} ]]; then
+            item="$m — ${DESC[$m]}"
         else
-            item="$m — ${DESC[$m]:-}"
+            item=$m; is_custom "$m" && item+=" — Custom model"
+            (( $(model_scale "$m") == 4 )) || item+="${item/*—*/,}${item/*—*/ —} $(model_scale "$m")×"
         fi
         [[ " ${model_items[*]} " == *" $item "* ]] || model_items+=("$item")
     done
@@ -494,7 +531,7 @@ Leave empty to use <i>Output size</i>.</small>"
 fi
 
 # --- Validate and work out the final size --------------------------------------------
-[[ -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]}"
+[[ -n $model && -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]}"
 gpu=${gpu:-${upscayl_gpu:-auto}}
 scale=$(model_scale "$model")
 max_w=$((src_w * scale)) need=$(space_for "$scale")
@@ -519,7 +556,7 @@ out_dir=$(dirname -- "$output")
 [[ -d $out_dir ]] || die "folder not found: $out_dir"
 [[ -w $out_dir ]] || die "can't write to $out_dir"
 
-printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"
+{ mkdir -p "$(dirname "$CONF")" && printf 'last_model=%q\nlast_format=%q\nlast_dir=%q\n' "$model" "$format" "$(dirname "$(realpath "$input")")" >"$CONF"; } 2>/dev/null || true
 
 echo "Input:  ${src_w}×${src_h}, $count frames, ${total}s, ~$fps fps"
 echo "Output: ${out_w}×${out_h} $format, model $model (${scale}×), GPU $gpu"

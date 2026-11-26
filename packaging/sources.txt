@@ -1,0 +1,18 @@
+# Everything the release packages are built from, pinned by SHA-256.
+# name  sha256  url
+upscayl-bin-linux.zip  a9fab3c770b62f2b7a35d8d6d61eb4e8b3aef79128b665c919d080b85a2292f2  https://github.com/upscayl/upscayl-ncnn/releases/download/20251207-174704/upscayl-bin-20251207-174704-linux.zip
+upscayl-bin-windows.zip  1f0f65c5d2ade866555e2ac467d35952c35a47080a4060fe56a1ab028f67258a  https://github.com/upscayl/upscayl-ncnn/releases/download/20251207-174704/upscayl-bin-20251207-174704-windows.zip
+upscayl-ncnn-20251207-174704.tar.gz  a795c6b8950e7e88434f07ae352182b2bf38f229894b61d8196ac985758115fe  https://github.com/upscayl/upscayl-ncnn/archive/refs/tags/20251207-174704.tar.gz
+realesrgan-ncnn-vulkan-ubuntu.zip  e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96  https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+realesrgan-ncnn-vulkan-windows.zip  abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d  https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip
+RealESRGAN_General_x4_v3.param  22174924330297357434ad21ed0af7f4b820008d2a502b492754d130d4142714  https://raw.githubusercontent.com/upscayl/custom-models/4b6d2cfa59c7442af115dfc6e50fd8d7d40b96ef/models/RealESRGAN_General_x4_v3.param
+RealESRGAN_General_x4_v3.bin  85ee266b632a765a725425ba6a5620c088c8aa2939a03063b2d83b3462724cc1  https://raw.githubusercontent.com/upscayl/custom-models/4b6d2cfa59c7442af115dfc6e50fd8d7d40b96ef/models/RealESRGAN_General_x4_v3.bin
+Real-ESRGAN-LICENSE  4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2  https://raw.githubusercontent.com/xinntao/Real-ESRGAN/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE
+nasm-2.16.03.tar.xz  1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148  https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
+x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2  6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224  https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+libvpx-1.17.0.tar.gz  1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a  https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz
+libaom-3.15.3.tar.gz  12c01dc731ed7b5a999e28120b45bf58a002ba3435a4ba2cfbc1e084a27c9c04  https://storage.googleapis.com/aom-releases/libaom-3.15.3.tar.gz
+zlib-1.4.tar.gz  02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz
+opus-1.6.1.tar.gz  6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1  https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+ffmpeg-9.1.tar.xz  1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433  https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
+llvm-mingw-20261117-ucrt-ubuntu-22.04-x86_64.tar.xz  e7a15a49a2ea95e9f3d8a9d0cfabe5052a4b10fb4777cc54de5a8c27b64bb701  https://github.com/mstorsjo/llvm-mingw/releases/download/20261117/llvm-mingw-20261117-ucrt-ubuntu-22.04-x86_64.tar.xz

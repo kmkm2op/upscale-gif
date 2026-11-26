@@ -3,9 +3,10 @@
 Install upscale-gif for the current user (no administrator rights needed).
 
 .DESCRIPTION
-Copies the script to %LOCALAPPDATA%\Programs\upscale-gif and adds "Upscale GIF" to the
-Start menu, the desktop and Explorer's "Send to" menu, plus an entry in Settings > Apps
-for uninstalling. Offers to install ffmpeg and Upscayl with winget when they are missing.
+Copies upscale-gif, with the upscaler, ffmpeg and models it comes with, to
+%LOCALAPPDATA%\Programs\upscale-gif and adds "Upscale GIF" to the Start menu, the desktop
+and Explorer's "Send to" menu, plus an entry in Settings > Apps for uninstalling. Without
+the bundled programs, it offers to install ffmpeg and Upscayl with winget.
 
     install.ps1              install or update
     install.ps1 -Uninstall   remove everything again
@@ -59,21 +60,29 @@ try {
     }
     [void](New-Item -ItemType Directory -Force -Path $Dest)
     if ((Resolve-Path -LiteralPath $src).ProviderPath -ne (Resolve-Path -LiteralPath $Dest).ProviderPath) {
-        foreach ($f in 'upscale-gif.ps1', 'install.ps1', 'README.txt', 'LICENSE.txt') {
+        # Replace the bundled folders, so files from an older version don't linger
+        foreach ($d in 'bin', 'models', 'licenses') {
+            $p = Join-Path $Dest $d
+            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+        }
+        foreach ($f in 'upscale-gif.ps1', 'install.ps1', 'README.txt', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt',
+            'upscale-gif.ico', 'bin', 'models', 'licenses') {
             $p = Join-Path $src $f
-            if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $Dest -Force }
+            if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $Dest -Recurse -Force }
         }
     }
     # Files from a downloaded zip carry the "came from the internet" mark
-    Get-ChildItem -LiteralPath $Dest -File | Unblock-File
+    Get-ChildItem -LiteralPath $Dest -File -Recurse | Unblock-File
 
-    # Use Upscayl's icon when it is installed
+    # Our icon, else Upscayl's when it is installed
     $icon = $null
+    if (Test-Path -LiteralPath (Join-Path $Dest 'upscale-gif.ico')) { $icon = (Join-Path $Dest 'upscale-gif.ico') + ',0' }
     $apps = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
         'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
         Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'Upscayl*' }
     foreach ($a in $apps) {
+        if ($icon) { break }
         if ($a.PSObject.Properties['DisplayIcon'] -and $a.DisplayIcon) {
             $file = ($a.DisplayIcon -split ',')[0].Trim('"')
             if (Test-Path -LiteralPath $file) { $icon = "$file,0" }

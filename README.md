@@ -1,13 +1,15 @@
 # upscale-gif
 
-Upscale animations and videos with [Upscayl](https://github.com/upscayl/upscayl)'s AI models.
+Upscale animations and videos with AI, using [Upscayl](https://github.com/upscayl/upscayl)'s
+upscaler and Real-ESRGAN models.
 The output keeps every frame's original timing, its transparency and its audio.
 
-- **Input:** GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and anything
-  else ffmpeg can decode
+- **Input:** GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
+  video formats
 - **Output:** GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1)
-- **Interface:** command-line options, or a small settings window (zenity) for anything
-  you leave out, so it also works from a desktop launcher or file manager
+- **Interface:** command-line options, or a small settings window for anything you leave
+  out, so it also works from a desktop launcher or file manager
+- **Platforms:** Linux (bash) and Windows (PowerShell)
 
 ## How it works
 
@@ -30,42 +32,57 @@ The output keeps every frame's original timing, its transparency and its audio.
 Temporary frames go to `~/.cache/upscale-gif.XXXXXX` (or `$XDG_CACHE_HOME`), not `/tmp`,
 because they can take several GB. That folder is deleted when the script exits.
 
-## Requirements
-
-- bash 4+, GNU coreutils (`numfmt`, `realpath`), awk
-- ffmpeg and ffprobe 7+ (8+ for animated WebP input), built with the encoders for the
-  formats you want: `gif`, `libx264`, `libvpx-vp9`, `libaom-av1`, and `libopus` (optional)
-- Upscayl, from any source: distro package, .deb/.rpm, Snap, Flatpak, or an extracted
-  AppImage
-- A GPU with Vulkan support
-- python3 (optional): reads Upscayl's own settings, i.e. its custom models folder and GPU ID
-- For the windows: `zenity` (and `kdialog` for the file picker, when available),
-  plus `notify-send` for the "done" notification
-
 ## Install
 
-```sh
-make install                      # to /usr/local/bin (needs sudo)
-make install PREFIX=~/.local      # just for you, to ~/.local/bin
-```
+Download the package for your system from the
+[Releases](../../releases) page. Everything is included: Upscayl's upscaler, AI models and
+ffmpeg.
 
-Or copy `upscale-gif` anywhere on your `PATH` and make it executable.
+**Windows 10/11:** extract `upscale-gif-<version>-windows-x64.zip` and double-click
+`Install.cmd`. No administrator rights needed. This adds "Upscale GIF" to the Start menu,
+the desktop and the "Send to" menu. See [windows/README.txt](windows/README.txt).
 
-Run `upscale-gif -c` to check what was detected.
-
-## Windows
-
-`windows/` has a PowerShell version with the same features. It needs no extra software
-beyond Upscayl and ffmpeg, and it uses Windows dialogs instead of zenity. Build the zip with:
+**Linux (x86-64):**
 
 ```sh
-make windows                  # creates dist/upscale-gif-<version>-windows.zip
-make windows VERSION=1.1.0
+tar xf upscale-gif-*-linux-x86_64.tar.gz
+cd upscale-gif-*-linux-x86_64
+./install.sh            # ./install.sh --uninstall removes it again
 ```
 
-On Windows, extract the zip and run `Install.cmd`. It needs no administrator rights. It adds
-"Upscale GIF" to the Start menu, the desktop and the "Send to" menu, and offers to install
-ffmpeg and Upscayl with winget if they're missing. See [windows/README.txt](windows/README.txt).
+This installs to `~/.local/share/upscale-gif` (no root needed) and adds an application menu
+entry, a desktop shortcut, "Open with" for animations and videos, a Dolphin right-click
+action and the `upscale-gif` command.
+
+You need a GPU with a Vulkan driver. On Linux you also need glibc 2.35+ (Ubuntu 22.04,
+Debian 12, Fedora 36 or newer) and `zenity` for the windows (`kdialog` is used for the file
+picker when available).
+
+Run `upscale-gif -c` to see what was detected.
+
+### Without the bundle
+
+The script also works on its own (`make install PREFIX=~/.local`, or copy `upscale-gif`
+onto your `PATH`). It then needs bash 4+, GNU coreutils, ffmpeg/ffprobe 7+ (8+ for
+animated WebP input) with `gif`, `libx264`, `libvpx-vp9` and `libaom-av1`, and an
+installed Upscayl (distro package, .deb/.rpm, Snap, Flatpak, or an extracted AppImage).
+python3 is optional: it reads Upscayl's own settings (custom models folder, GPU ID).
+
+## Building the release packages
+
+```sh
+make release VERSION=1.0.0      # or release-linux / release-windows
+```
+
+[packaging/build.sh](packaging/build.sh) downloads the pinned sources in
+[packaging/sources.txt](packaging/sources.txt), builds a small static ffmpeg for Linux and,
+with the llvm-mingw cross-compiler, for Windows, and writes three files to `dist/`: the
+Linux and Windows packages, and the source code of the bundled GPL/AGPL programs. It needs
+gcc, make, cmake, pkg-config, python3, curl, xz and bzip2; the first build takes a few
+minutes.
+
+Pushing a tag like `v1.0.0` runs the same build on GitHub Actions
+([release.yml](.github/workflows/release.yml)) and publishes a release with the three files.
 
 ## Usage
 
@@ -110,13 +127,29 @@ non-square pixels (anamorphic video) are made square.
 Output sizes are rounded to even numbers. Sizes above 4× still work, but the final step
 just enlarges the image.
 
+## Models
+
+The packages include these models (all BSD-3-Clause, from
+[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)):
+
+| Model | Good for |
+|---|---|
+| `realesrgan-x4plus` | General purpose, best quality (the default) |
+| `RealESRGAN_General_x4_v3` | General purpose, fast |
+| `realesrgan-x4plus-anime` | Digital art, anime, cartoons |
+| `realesr-animevideov3-x4`, `-x3`, `-x2` | Anime and cartoon video, fastest |
+
+If the Upscayl app is installed too, its own models (and its custom models, below) are
+added to the list.
+
 ## Finding Upscayl
 
 The script looks for Upscayl's command-line upscaler (`upscayl-bin`) in this order:
 
 1. `UPSCAYL_BIN` environment variable
-2. `upscayl-bin` or `upscayl-ncnn` on `PATH`
-3. Common install locations: `/usr/share/upscayl/bin`, `/usr/lib/upscayl/resources/bin`,
+2. The bundled `bin/upscayl-bin` next to the script
+3. `upscayl-bin` or `upscayl-ncnn` on `PATH`
+4. Common install locations: `/usr/share/upscayl/bin`, `/usr/lib/upscayl/resources/bin`,
    `/opt/Upscayl/resources/bin`, `/snap/upscayl/current/resources/bin`, and Flatpak
    `org.upscayl.Upscayl` (system and user installs)
 
@@ -160,4 +193,9 @@ The GPU is chosen by `-g`, else by Upscayl's **GPU ID** setting, else automatica
 
 ## License
 
-[MIT](LICENSE)
+upscale-gif is [MIT](LICENSE)-licensed. The release packages also contain programs and
+models with their own licenses, listed in
+[packaging/THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md): Upscayl's upscaler
+(AGPL-3.0), ffmpeg with x264 (GPL-2.0-or-later), and the Real-ESRGAN models (BSD-3-Clause).
+They are separate programs that upscale-gif runs, so they don't change the license of
+upscale-gif itself. Their source code is published with each release.

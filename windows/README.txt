@@ -1,23 +1,21 @@
 Upscale GIF for Windows
 =======================
 
-Upscale animations and videos with Upscayl's AI models. The output keeps every frame's
-original timing, its transparency and its audio.
+Upscale animations and videos with AI. The output keeps every frame's original timing,
+its transparency and its audio.
 
-  Input:  GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and anything
-          else ffmpeg can read
+  Input:  GIF, animated WebP, APNG, animated AVIF, MP4, WebM, MKV, MOV, and most other
+          video formats
   Output: GIF, MP4 (H.264), WebM (VP9) or AVIF (AV1)
+
+Everything it needs is included: Upscayl's upscaler, AI models and ffmpeg.
 
 
 What you need
 -------------
 
-- Windows 10 or 11 (PowerShell is built in)
-- Upscayl:  https://upscayl.org   or   winget install Upscayl.Upscayl
-- ffmpeg:   winget install Gyan.FFmpeg
-- A GPU with Vulkan support (any recent AMD, NVIDIA or Intel GPU)
-
-The installer offers to install ffmpeg and Upscayl with winget if they are missing.
+- Windows 10 or 11, 64-bit (PowerShell is built in)
+- A GPU with a Vulkan driver (any recent AMD, NVIDIA or Intel GPU with its normal driver)
 
 
 Install
@@ -42,10 +40,11 @@ Use
   (On Windows 11, choose "Show more options" first.)
 
 A progress window shows the current step and the time left, with a Cancel button. When
-it's done, you can open the folder of the new file. By default the result is saved next to the original as <name>_<width>x<height>.<ext>.
+it's done, you can open the folder of the new file. By default the result is saved next
+to the original as <name>_<width>x<height>.<ext>.
 
-Custom models: models in the custom models folder chosen in Upscayl
-(Settings > Custom models folder) appear in the model list automatically.
+If you also have the Upscayl app, its models and its custom models folder
+(Settings > Custom models folder) appear in the model list too.
 
 
 Command line
@@ -56,18 +55,20 @@ Command line
 
   -f can be left out when -o ends in .gif, .mp4, .webm or .avif.
   Use -Height (not -H, which PowerShell reads as -h for help).
-  -c   show the detected Upscayl, models, GPUs and ffmpeg encoders
+  -c   show the detected upscaler, models, GPUs and ffmpeg encoders
   -h   help
 
 Settings (optional environment variables):
 
-  UPSCAYL_BIN            path to upscayl-bin.exe, for an Upscayl install that isn't found
-  UPSCAYL_MODELS         models folder for that install
+  UPSCAYL_BIN            path to another upscayl-bin.exe to use instead of the bundled one
+  UPSCAYL_MODELS         models folder for that upscayl-bin.exe
   UPSCAYL_CUSTOM_MODELS  custom models folder, instead of the one set in Upscayl
   UPSCALE_GIF_TEMP       folder for temporary frames (default %TEMP%); they can take
                          several GB for long videos
 
-ffmpeg is found on PATH, in winget's folders, or next to upscale-gif.ps1.
+Without the bundled bin folder (e.g. the script alone), ffmpeg is looked for on PATH and
+in winget's folders, and Upscayl in its usual install folders.
 
 
-License: MIT (see LICENSE.txt)
+License: MIT (see LICENSE.txt). The bundled programs and models have their own licenses;
+see THIRD-PARTY-NOTICES.txt and the licenses folder.
