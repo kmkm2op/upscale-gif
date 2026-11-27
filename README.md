@@ -20,7 +20,7 @@ The output keeps every frame's original timing, its transparency and its audio.
 2. Extracts every frame as a lossless RGBA PNG.
 3. Upscales all frames with `upscayl-bin` on the GPU (Vulkan), at the model's own scale
    (4× for the built-in models). The `nearest` choice for pixel art skips this step.
-4. Downsamples to the size you chose (Lanczos), then reassembles the frames with their
+4. Downsamples to the size you chose (Lanczos by default; see [Downsamplers](#downsamplers)), then reassembles the frames with their
    original durations.
 5. Encodes the result:
 
@@ -113,7 +113,7 @@ Pushing a tag like `v1.0.0` runs the same build on GitHub Actions
 ## Usage
 
 ```
-upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-g gpu] [-o output] [input]
+upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-d downsampler] [-g gpu] [-o output] [input]
 upscale-gif -c     # show detected Upscayl, models, GPUs and ffmpeg encoders
 upscale-gif -h     # help
 ```
@@ -125,6 +125,7 @@ upscale-gif -h     # help
 | `-H height` | Output height in pixels; width follows the aspect ratio |
 | `-f format` | `gif`, `webp`, `mp4`, `webm`, `avif`, and for single images `png`, `jpg`. Can be left out when `-o` ends in one of these |
 | `-q quality`| 1–100 (default 80); ignored for `png` |
+| `-d downsampler` | `lanczos` (default), `spline`, `bicubic` or `area`; see [Downsamplers](#downsamplers) |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 
@@ -133,9 +134,11 @@ Anything you don't give on the command line is asked for:
 - No input file: a file picker opens.
 - No model, size or format: a settings window opens. It shows the source size, frame count,
   duration, fps and the temporary space needed. The size list offers 2×/3×/4× and
-  720p–2160p presets. With more than one GPU, it also offers a GPU choice.
+  720p–2160p presets. It also asks for the quality and downsampler, and with more than one
+  GPU, which GPU to use.
 
-The last model, format and folder you used are saved in `~/.config/upscale-gif.conf`.
+The last model, format, quality, downsampler and folder you used are saved in
+`~/.config/upscale-gif.conf`.
 
 While it runs, a progress bar shows the current step and the time left: in the terminal, or
 in a window with a Cancel button when started without one (e.g. from a desktop shortcut).
@@ -183,6 +186,21 @@ marks them. Authors and details are in
 [packaging/THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md).
 
 Models in the custom models folder set in the Upscayl app (below) are added to the list.
+
+### Downsamplers
+
+AI models upscale by a fixed 2×, 3× or 4×, so their result is then resized to the size you
+chose. The downsampler decides how:
+
+| Downsampler | Result |
+|-------------|--------|
+| `lanczos` (default) | Sharpest; can leave faint halos along hard edges |
+| `spline` | Nearly as sharp, with fewer halos |
+| `bicubic` | Softer and smoother |
+| `area` | Averages pixels: no halos, softest. Good for big reductions, e.g. 4× down to 1.5× |
+
+It doesn't matter when the chosen size is exactly the model's scale (nothing is resized), and
+it isn't used by `nearest`.
 
 ### Pixel art: `nearest`
 

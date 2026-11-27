@@ -5,8 +5,8 @@ and save it as gif, mp4, webm or avif.
 
 .DESCRIPTION
 Windows version of upscale-gif. Anything not given on the command line is asked for in a
-settings window. Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos)
-to the chosen size. Every frame keeps its original timing; audio is kept for mp4/webm.
+settings window. Frames are upscaled by the model (2x/3x/4x), then downsampled to the
+chosen size (-d: lanczos, spline, bicubic or area). Every frame keeps its original timing; audio is kept for mp4/webm.
 The "nearest" model is nearest-neighbour scaling for pixel art (no AI, no GPU needed).
 
 Requirements: Windows PowerShell 5.1 or PowerShell 7, ffmpeg/ffprobe 7+ (8+ for animated
@@ -25,6 +25,7 @@ param(
     [Alias('g')] [string]$Gpu,
     [Alias('o')] [string]$Output,
     [Alias('q')] [string]$Quality,
+    [Alias('d')] [string]$Downsampler,
     [Alias('c')] [switch]$Check,
     [Alias('h')] [switch]$Help,
     # Report errors and completion in message boxes (used by the shortcuts)
@@ -37,13 +38,15 @@ $Inv = [Globalization.CultureInfo]::InvariantCulture
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $Title = 'Upscale GIF'
 $Usage = @'
-Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f format] [-q quality%] [-g gpu] [-o output] [file]
+Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f format] [-q quality%]
+                      [-d downsampler] [-g gpu] [-o output] [file]
        upscale-gif.ps1 -c    (show detected tools, models and GPUs)
 Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
 mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
-Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
-keeps its original timing, and audio is kept for mp4/webm output. -m nearest is nearest-
-neighbour scaling for pixel art: no AI and no GPU, whole multiples (2x, 3x...) of the size.
+Frames are upscaled by the model, then downsampled to the chosen size with -d: lanczos
+(default), spline, bicubic or area. Every frame keeps its original timing, and audio is kept
+for mp4/webm output. -m nearest is nearest-neighbour scaling for pixel art: no AI and no
+GPU, whole multiples (2x, 3x...) of the size.
 '@
 
 $Desc = @{
@@ -91,6 +94,14 @@ $Encoder = @{ gif = 'gif'; mp4 = 'libx264'; webm = 'libvpx-vp9'; avif = 'libaom-
 $AnimFormats = 'gif', 'webp', 'webm', 'avif', 'mp4'
 $ImageFormats = 'png', 'jpg', 'webp', 'avif', 'gif'   # offered when the input is a single image
 $Qualities = 100, 95, 90, 85, 80, 75, 70, 60, 50, 40, 30, 20, 10
+# ffmpeg filters for resizing the model's output to the chosen size
+$Downsamplers = 'lanczos', 'spline', 'bicubic', 'area'
+$DownsamplerDesc = @{
+    lanczos = 'Sharpest (default)'
+    spline = 'Sharp, fewer halos around edges'
+    bicubic = 'Softer, smooth'
+    area = 'Pixel averaging, no halos; softest, good for big reductions'
+}
 
 # --- Helpers ---------------------------------------------------------------------------
 # %APPDATA% (on Linux, ~/.config, which .NET reports as "" until it exists)
@@ -857,15 +868,17 @@ function Invoke-Main {
     }
     $quality = $Quality -replace '%$', ''
     if ($quality -and ($quality -notmatch '^\d+$' -or [int]$quality -lt 1 -or [int]$quality -gt 100)) { Fail 'quality must be 1 to 100' }
+    $downsampler = if ($Downsampler) { $Downsampler.ToLowerInvariant() } else { '' }
+    if ($downsampler -and $Downsamplers -notcontains $downsampler) { Fail "downsampler must be one of: $($Downsamplers -join ' ')" }
 
     # Remembered choices from the last run
     $confDir = Join-Path ((Get-AppData)) 'upscale-gif'
     $conf = Join-Path $confDir 'settings.json'
-    $last = @{ model = ''; format = 'gif'; imageFormat = ''; quality = '80'; dir = [Environment]::GetFolderPath('MyPictures') }
+    $last = @{ model = ''; format = 'gif'; imageFormat = ''; quality = '80'; downsampler = 'lanczos'; dir = [Environment]::GetFolderPath('MyPictures') }
     if (Test-Path -LiteralPath $conf) {
         try {
             $saved = Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json
-            foreach ($k in 'model', 'format', 'imageFormat', 'quality', 'dir') { if ($saved.PSObject.Properties[$k] -and $saved.$k) { $last[$k] = [string]$saved.$k } }
+            foreach ($k in 'model', 'format', 'imageFormat', 'quality', 'downsampler', 'dir') { if ($saved.PSObject.Properties[$k] -and $saved.$k) { $last[$k] = [string]$saved.$k } }
         } catch { }
     }
     if (-not $script:ModelDir.Contains($last.model)) {
@@ -1066,6 +1079,14 @@ function Invoke-Main {
             $label = 'Quality (higher is better but larger)'; if ($still) { $label += ', not used for PNG' }
             $fields += @{ Label = $label; Items = @($qualityValues | ForEach-Object { "$_%" }) }; $keys += 'quality'
         }
+        $downsamplerValues = @()
+        if (-not $downsampler -and $model -ne $Nearest) {
+            foreach ($d in @($last.downsampler) + @($Downsamplers)) {
+                if ($DownsamplerDesc.Contains($d) -and $downsamplerValues -notcontains $d) { $downsamplerValues += $d }
+            }
+            $fields += @{ Label = 'Downsampler (for AI models)'
+                Items = @($downsamplerValues | ForEach-Object { "$_ - $($DownsamplerDesc[$_])" }) }; $keys += 'downsampler'
+        }
         if ($gpuItems) { $fields += @{ Label = 'GPU'; Items = $gpuItems }; $keys += 'gpu' }
         $text = "$name`n$about`n$spaceNote$warn"
         if ($askSize) { $text += "`n`n$customHelp" }
@@ -1078,6 +1099,7 @@ function Invoke-Main {
         if (-not $format) { $format = $formatValues[$answer.format] }
         if ($gpuItems) { $gpu = $gpuValues[$answer.gpu] }
         if ($qualityValues) { $quality = [string]$qualityValues[$answer.quality] }
+        if ($downsamplerValues) { $downsampler = $downsamplerValues[$answer.downsampler] }
         if ($askSize) {
             $custom = [string]$answer.custom -replace '\s', ''
             if ($custom) { $width = $custom } else { $width = [string]$sizeValues[$answer.size] }
@@ -1097,6 +1119,7 @@ function Invoke-Main {
     $spaceNote = "Needs ~$(Human $need) of temporary space ($(Human $free) free)"
     if (-not $format) { $format = $defaultFormat }
     if (-not $quality) { $quality = '80' }
+    if (-not $downsampler) { $downsampler = 'lanczos' }
     $q = [int]$quality
     if ($format -notmatch '^(gif|mp4|webm|avif|png|jpg|webp)$') { Fail "unsupported format: $format" }
     if (-not $still -and $format -match '^(png|jpg)$') {
@@ -1144,7 +1167,8 @@ function Invoke-Main {
         if (-not (Test-Path -LiteralPath $confDir)) { [void](New-Item -ItemType Directory -Path $confDir) }
         if ($still) { $last.imageFormat = $format } else { $last.format = $format }
         if ($format -ne 'png') { $last.quality = $quality }
-        @{ model = $model; format = $last.format; imageFormat = $last.imageFormat; quality = $last.quality; dir = (Split-Path $inputFile) } |
+        if (-not $nearestMode) { $last.downsampler = $downsampler }
+        @{ model = $model; format = $last.format; imageFormat = $last.imageFormat; quality = $last.quality; downsampler = $last.downsampler; dir = (Split-Path $inputFile) } |
             ConvertTo-Json | Set-Content -LiteralPath $conf -Encoding UTF8
     } catch { }
 
@@ -1154,7 +1178,7 @@ function Invoke-Main {
         if ($format -eq 'webp') { $qNote = ', lossless' }
         Write-Host "Output: ${outW}x${outH} $format$qNote, nearest neighbour (${scale}x)"
     } else {
-        Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), GPU $gpu"
+        Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), $downsampler downsampling, GPU $gpu"
     }
     if ($gpuWarn) { Write-Host "Note: $gpuWarn" }
 
@@ -1231,7 +1255,7 @@ function Invoke-Main {
         $finalDelay = [string][long][math]::Round($durations[$count - 1] * 100, [MidpointRounding]::AwayFromZero)
 
         Write-Host "Encoding $format..."
-        $resize = "scale=${outW}:${outH}:flags=lanczos,setsar=1"
+        $resize = "scale=${outW}:${outH}:flags=$downsampler,setsar=1"
         $dither = 'sierra2_4a'; $encFrom = 85
         if ($nearestMode) {
             $resize = "scale=$($srcW * $scale):$($srcH * $scale):flags=neighbor,setsar=1$pad"

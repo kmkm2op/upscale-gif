@@ -60,7 +60,9 @@ If you also have the Upscayl app, its models and its custom models folder
 
 Command line:
 
-    upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-g gpu] [-o output] [file]
+    upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-d downsampler] [-g gpu] [-o output] [file]
+    -d: how the AI result is resized: lanczos (default, sharpest), spline, bicubic or area
+        (softest, no halos)
     upscale-gif -c    show the detected upscaler, models, GPUs and ffmpeg
     upscale-gif -h    help
 

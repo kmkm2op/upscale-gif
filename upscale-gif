@@ -2,13 +2,15 @@
 # Upscale an animation, video or image (gif, mp4, webm, avif, webp, apng, mkv, mov, png, jpg...)
 # with Upscayl and save it as gif, webp, mp4, webm or avif (images also as png or jpg).
 #
-# Usage: upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality%] [-g gpu] [-o output] [input]
+# Usage: upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality%] [-d downsampler]
+#                    [-g gpu] [-o output] [input]
 #        upscale-gif -c    (show detected tools, models and GPUs)
 # Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
 # mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
-# Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
-# keeps its original timing, and audio is kept for mp4/webm output. -m nearest is nearest-
-# neighbour scaling for pixel art: no AI and no GPU, whole multiples (2x, 3x...) of the size.
+# Frames are upscaled by the model, then downsampled to the chosen size with -d: lanczos
+# (default), spline, bicubic or area. Every frame keeps its original timing, and audio is kept
+# for mp4/webm output. -m nearest is nearest-neighbour scaling for pixel art: no AI and no
+# GPU, whole multiples (2x, 3x...) of the size.
 #
 # Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the windows, zenity
 # (kdialog is used for the file picker when available). The release packages include
@@ -27,7 +29,7 @@ set -euo pipefail
 
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
 WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
-model="" format="" width="" height="" output="" input="" gpu="" quality=""
+model="" format="" width="" height="" output="" input="" gpu="" quality="" downsampler=""
 # Release packages carry upscayl-bin, ffmpeg and ffprobe in bin/ and the models in models/
 SELF_DIR=$(dirname "$(realpath "$0")")
 BUNDLE_BIN=$SELF_DIR/bin
@@ -76,6 +78,14 @@ declare -A FMT_DESC=(
 ANIM_FORMATS=(gif webp webm avif mp4)
 IMAGE_FORMATS=(png jpg webp avif gif)   # offered when the input is a single image
 QUALITIES=(100 95 90 85 80 75 70 60 50 40 30 20 10)
+# ffmpeg filters for resizing the model's output to the chosen size
+DOWNSAMPLERS=(lanczos spline bicubic area)
+declare -A DOWNSAMPLER_DESC=(
+    [lanczos]="Sharpest (default)"
+    [spline]="Sharp, fewer halos around edges"
+    [bicubic]="Softer, smooth"
+    [area]="Pixel averaging, no halos; softest, good for big reductions"
+)
 
 have() { command -v "$1" >/dev/null 2>&1; }
 gui() { [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] && have zenity; }
@@ -380,17 +390,18 @@ human() { numfmt --to=iec --suffix=B "$1"; }
 # Temporary space: PNG frames compress to roughly half of raw RGBA; original + upscaled copies
 space_for() { echo $(( count * src_w * src_h * 4 * (1 + $1 * $1) / 2 )); }
 
-while getopts "m:w:H:f:q:g:o:ch" opt; do
+while getopts "m:w:H:f:q:d:g:o:ch" opt; do
     case $opt in
         m) model=$OPTARG ;;
         w) width=$OPTARG ;;
         H) height=$OPTARG ;;
         f) format=${OPTARG,,}; [[ $format != jpeg ]] || format=jpg ;;
         q) quality=${OPTARG%\%} ;;
+        d) downsampler=${OPTARG,,} ;;
         o) output=$OPTARG ;;
         g) gpu=${OPTARG,,} ;;
         c) check; exit ;;
-        h) sed -n '5,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        h) sed -n '5,/^#$/{/^#$/d; s/^# \{0,1\}//p}' "$0"; exit 0 ;;
         *) exit 1 ;;
     esac
 done
@@ -432,9 +443,10 @@ for line in "${GPU_LIST[@]}"; do software_gpu "$line" || { gpu_warn=x; break; };
 [[ -n $gpu_warn || ${#GPU_LIST[@]} == 0 ]] && gpu_warn="" \
     || gpu_warn="Only a software Vulkan driver was found (${GPU_LIST[0]#* }): upscaling runs on the CPU and is very slow. Install your graphics card's Vulkan driver to use the GPU."
 [[ -z $quality ]] || { [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )); } || die "quality must be 1 to 100"
+[[ -z $downsampler || " ${DOWNSAMPLERS[*]} " == *" $downsampler "* ]] || die "downsampler must be one of: ${DOWNSAMPLERS[*]}"
 
 # Remembered choices from the last run
-last_model="" last_format=gif last_image_format="" last_quality=80 last_dir=$HOME
+last_model="" last_format=gif last_image_format="" last_quality=80 last_downsampler=lanczos last_dir=$HOME
 [[ -f $CONF ]] && source "$CONF"
 if [[ -z $last_model || -z ${MODEL_DIR[$last_model]:-} ]]; then
     last_model=${MODEL_LIST[0]:-}
@@ -624,6 +636,15 @@ Leave empty to use <i>Output size</i>.</small>"
         quality_label="Quality (higher is better but larger)"; (( still )) && quality_label+=", not used for PNG"
         field quality --add-combo="$quality_label" --combo-values="$(join "${quality_items[@]}")"
     fi
+    if [[ -z $downsampler && $model != "$NEAREST" ]]; then
+        downsampler_items=()
+        for d in "$last_downsampler" "${DOWNSAMPLERS[@]}"; do
+            [[ -n ${DOWNSAMPLER_DESC[$d]:-} && " ${downsampler_items[*]} " != *" $d — "* ]] || continue
+            downsampler_items+=("$d — ${DOWNSAMPLER_DESC[$d]}")
+        done
+        field downsampler --add-combo="Downsampler (for AI models)" \
+            --combo-values="$(join "${downsampler_items[@]}")"
+    fi
     (( ${#gpu_items[@]} )) && field gpu --add-combo="GPU" --combo-values="$(join "${gpu_items[@]}")"
     form=$(zenity --forms --title="Upscale GIF" --width=480 --separator=$'\x1f' \
         --text="<b>$(basename "$input")</b>\n$about\n$space_note$warn${custom_help:+\n\n$custom_help}" \
@@ -632,6 +653,9 @@ Leave empty to use <i>Output size</i>.</small>"
     declare -A answer=()
     for i in "${!keys[@]}"; do answer[${keys[$i]}]=${answers[$i]:-}; done
     f_model=${answer[model]:-} f_size=${answer[size]:-} f_custom=${answer[custom]:-} f_format=${answer[format]:-} f_gpu=${answer[gpu]:-}
+    if [[ -n ${answer[downsampler]+set} ]]; then
+        downsampler=${answer[downsampler]%% —*}; [[ -n $downsampler ]] || downsampler=${downsampler_items[0]%% —*}
+    fi
     if [[ -n ${answer[quality]+set} ]]; then
         quality=${answer[quality]%\%}; [[ -n $quality ]] || quality=$last_quality
     fi
@@ -654,7 +678,7 @@ Leave empty to use <i>Output size</i>.</small>"
 fi
 
 # --- Validate and work out the final size --------------------------------------------
-format=${format:-$default_format} quality=${quality:-80}
+format=${format:-$default_format} quality=${quality:-80} downsampler=${downsampler:-lanczos}
 [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )) || quality=80
 [[ -n $model && -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]} $NEAREST"
 nearest=0; [[ $model != "$NEAREST" ]] || nearest=1
@@ -705,8 +729,9 @@ out_dir=$(dirname -- "$output")
 
 if (( still )); then last_image_format=$format; else last_format=$format; fi
 [[ $format == png ]] || last_quality=$quality
-{ mkdir -p "$(dirname "$CONF")" && printf 'last_model=%q\nlast_format=%q\nlast_image_format=%q\nlast_quality=%q\nlast_dir=%q\n' \
-    "$model" "$last_format" "$last_image_format" "$last_quality" "$(dirname "$(realpath "$input")")" >"$CONF"; } 2>/dev/null || true
+(( nearest )) || last_downsampler=$downsampler
+{ mkdir -p "$(dirname "$CONF")" && printf 'last_model=%q\nlast_format=%q\nlast_image_format=%q\nlast_quality=%q\nlast_downsampler=%q\nlast_dir=%q\n' \
+    "$model" "$last_format" "$last_image_format" "$last_quality" "$last_downsampler" "$(dirname "$(realpath "$input")")" >"$CONF"; } 2>/dev/null || true
 
 echo "Input:  ${about// × /×}"
 q_note=", quality $quality%"; [[ $format != png ]] || q_note=""
@@ -714,7 +739,7 @@ if (( nearest )); then
     [[ $format != webp ]] || q_note=", lossless"
     echo "Output: ${out_w}×${out_h} $format$q_note, nearest neighbour (${scale}×)"
 else
-    echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), GPU $gpu"
+    echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), $downsampler downsampling, GPU $gpu"
 fi
 [[ -z $gpu_warn ]] || echo "Note: $gpu_warn"
 
@@ -886,7 +911,7 @@ webp_last_delay() {   # webp_last_delay FILE MS
 }
 
 say "Encoding $format..."
-resize="scale=${out_w}:${out_h}:flags=lanczos,setsar=1"
+resize="scale=${out_w}:${out_h}:flags=$downsampler,setsar=1"
 dither=sierra2_4a enc_from=85
 if (( nearest )); then
     resize="scale=$((src_w * scale)):$((src_h * scale)):flags=neighbor,setsar=1$pad"

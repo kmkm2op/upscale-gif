@@ -62,10 +62,12 @@ Command line
 ------------
 
   powershell -ExecutionPolicy Bypass -File upscale-gif.ps1 [-m model] [-w width | -Height height]
-      [-f format] [-q quality] [-g gpu] [-o output] [file]
+      [-f format] [-q quality] [-d downsampler] [-g gpu] [-o output] [file]
 
   -f can be left out when -o ends in .gif, .webp, .mp4, .webm, .avif, .png or .jpg.
   Use -Height (not -H, which PowerShell reads as -h for help).
+  -d   how the AI result is resized: lanczos (default, sharpest), spline, bicubic or area
+       (softest, no halos)
   -c   show the detected upscaler, models, GPUs and ffmpeg encoders
   -h   help
 
