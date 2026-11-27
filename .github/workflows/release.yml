@@ -1,4 +1,5 @@
-# Builds the release packages and publishes them when a version tag (v1.2.3) is pushed.
+# Builds the release packages and creates a draft release when a version tag (v1.2.3) is pushed.
+# Review the draft on GitHub, then publish it.
 name: Release
 
 on:
@@ -45,6 +46,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           v=${{ steps.version.outputs.version }}
-          draft=(); [ "${{ github.event_name }}" = workflow_dispatch ] && draft=(--draft)
-          gh release create "v$v" "${draft[@]}" --title "upscale-gif $v" --notes-file packaging/release-notes.md \
+          gh release create "v$v" --draft --title "upscale-gif $v" --notes-file packaging/release-notes.md \
             dist/upscale-gif-$v-linux-x86_64.tar.gz dist/upscale-gif-$v-windows-x64.zip dist/upscale-gif-$v-sources.tar.gz

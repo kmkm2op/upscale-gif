@@ -108,7 +108,8 @@ gcc, make, cmake, pkg-config, python3, curl, xz and bzip2; the first build takes
 minutes.
 
 Pushing a tag like `v1.0.0` runs the same build on GitHub Actions
-([release.yml](.github/workflows/release.yml)) and publishes a release with the three files.
+([release.yml](.github/workflows/release.yml)) and creates a draft release with the three
+files; publish it from the Releases page once you've checked it.
 
 ## Usage
 
