@@ -274,9 +274,9 @@ when none is found. A run stops with the same explanation before asking for anyt
 
 ## Credits
 
-upscale-gif was written with [GitHub Copilot](https://github.com/features/copilot), an AI
-coding assistant, which wrote and tested most of the code under Someone's direction. Every
-commit lists Copilot as a co-author.
+upscale-gif was written with [GitHub Copilot](https://github.com/features/copilot) running
+Anthropic's [Claude](https://www.anthropic.com/claude) model. Claude wrote and tested most of
+the code under Someone's direction. Every commit lists Copilot as a co-author.
 
 ## License
 
