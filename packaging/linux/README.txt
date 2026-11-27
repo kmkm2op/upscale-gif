@@ -18,7 +18,11 @@ Requirements
 ------------
 
 - 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 or newer)
-- A GPU with a Vulkan driver (any recent AMD, Intel or NVIDIA GPU)
+- A GPU with a Vulkan driver: AMD Radeon HD 7000 or newer, NVIDIA GeForce GTX 600 or
+  newer, or Intel 6th-gen Core graphics or newer (Mesa's Vulkan driver for AMD and
+  Intel, NVIDIA's own driver for NVIDIA). Virtual machines usually have none.
+- Recommended: a dedicated GPU with 4 GB or more of video memory. Integrated GPUs and
+  cards with less memory work, but more slowly.
 - zenity, for the windows (most desktops have it; otherwise install it with your
   package manager)
 

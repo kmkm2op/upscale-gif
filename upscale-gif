@@ -277,12 +277,31 @@ model_scale() {
 }
 
 # GPUs as upscayl-bin numbers them ("id name" per line): it lists them before failing
-# on the missing input.
+# on the missing input. Loaded once into GPU_LIST.
 gpus() {
     local m=${MODEL_LIST[0]:-}
     [[ -n $m ]] || return 0
     timeout 30 "$UPSCAYL" -i /nonexistent/upscale-gif-probe.png -o /dev/null -m "${MODEL_DIR[$m]}" -n "$m" 2>&1 \
         | sed -n 's/^\[\([0-9][0-9]*\) \(.*\)\]  queueC=.*/\1 \2/p' || true
+}
+GPU_LIST=() gpus_loaded=""
+load_gpus() { [[ -n $gpus_loaded ]] || { mapfile -t GPU_LIST < <(gpus); gpus_loaded=1; }; }
+# Software Vulkan drivers run on the CPU: they work, but extremely slowly
+software_gpu() { [[ ${1,,} =~ llvmpipe|lavapipe|swiftshader ]]; }
+NO_GPU_HELP="No GPU with a Vulkan driver was found, and upscale-gif needs one.
+Install the Vulkan driver for your graphics card: for AMD and Intel it is part of Mesa
+(mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch),
+and for NVIDIA it comes with NVIDIA's own driver. Virtual machines and remote desktop
+sessions usually have no Vulkan GPU. 'vulkaninfo --summary' shows what Vulkan can see."
+# Why the bundled upscaler can't run (missing libraries, too old a system), or nothing
+bundle_error() {
+    local b=$BUNDLE_BIN/upscayl-bin out
+    [[ -z $UPSCAYL && -z ${UPSCAYL_BIN:-} && -e $b ]] || return 0
+    out=$(timeout 10 "$b" -h 2>&1 | grep -v '^$' | head -1) || true
+    echo "the bundled upscaler can't start: ${out:-unknown error}
+It needs the Vulkan loader and libgomp (sudo apt install libvulkan1 libgomp1, sudo dnf install
+vulkan-loader libgomp, or sudo pacman -S vulkan-icd-loader gcc-libs), and glibc 2.35 or
+newer (Ubuntu 22.04, Debian 12, Fedora 36 or newer)."
 }
 
 encoder() { ffmpeg -hide_banner -encoders 2>/dev/null | awk '{ print $2 }' | grep -qx "$1"; }
@@ -298,6 +317,8 @@ check() {
     done
     if [[ -n $UPSCAYL && $UPSCAYL == "$(realpath -m "$BUNDLE_BIN/upscayl-bin")" ]]; then
         echo "Upscayl binary: $UPSCAYL (bundled)"
+    elif [[ -n $(bundle_error) ]]; then
+        echo "Upscayl binary: NOT WORKING, $(bundle_error)" | sed '2,$s/^/                /'; ok=1
     else
         echo "Upscayl binary: ${UPSCAYL:-NOT FOUND (install Upscayl or set UPSCAYL_BIN)}"; [[ -n $UPSCAYL ]] || ok=1
     fi
@@ -314,9 +335,18 @@ check() {
         echo "Custom models:  $CUSTOM_MODELS (from $src)"
         echo "                ${custom[*]:-no usable .param/.bin pairs}"
     fi
-    echo "GPUs:"
-    while read -r line; do echo "  $line"; done < <(gpus)
-    echo "  default: ${upscayl_gpu:-auto}${upscayl_gpu:+ (from Upscayl settings)}"
+    if [[ -n $UPSCAYL && -n $MODELS ]]; then
+        load_gpus
+        echo "GPUs:"
+        if (( ${#GPU_LIST[@]} == 0 )); then
+            echo "  NONE FOUND"; sed 's/^/  /' <<<"$NO_GPU_HELP"; ok=1
+        else
+            for line in "${GPU_LIST[@]}"; do
+                echo "  $line"; ! software_gpu "$line" || echo "    (software renderer on the CPU: works, but very slowly)"
+            done
+            echo "  default: ${upscayl_gpu:-auto}${upscayl_gpu:+ (from Upscayl settings)}"
+        fi
+    fi
     for f in ffmpeg ffprobe numfmt awk; do have $f || { echo "Missing:        $f"; ok=1; }; done
     if have ffmpeg; then
         echo "ffmpeg:         $(command -v ffmpeg) ($(ffmpeg -version | head -1 | cut -d' ' -f3))"
@@ -370,9 +400,21 @@ if [[ -n $output && $out_ext =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]]; then
 fi
 
 for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not installed"; done
+[[ -z $(bundle_error) ]] || die "$(bundle_error)"
 [[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
 [[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
 [[ -z $gpu || $gpu =~ ^(auto|[0-9]+(,[0-9]+)*)$ ]] || die "GPU must be auto, a number or a list like 0,1 (see -c)"
+# Check the GPU before asking for anything, rather than failing after extracting the frames
+load_gpus
+(( ${#GPU_LIST[@]} )) || die "$NO_GPU_HELP"
+for g in ${gpu//,/ }; do
+    [[ $g == auto ]] || printf '%s\n' "${GPU_LIST[@]%% *}" | grep -qx "$g" \
+        || die "there is no GPU $g. Available: $(printf '%s; ' "${GPU_LIST[@]}" | sed 's/; $//')"
+done
+gpu_warn=""
+for line in "${GPU_LIST[@]}"; do software_gpu "$line" || { gpu_warn=x; break; }; done
+[[ -n $gpu_warn ]] && gpu_warn="" \
+    || gpu_warn="Only a software Vulkan driver was found (${GPU_LIST[0]#* }): upscaling runs on the CPU and is very slow. Install your graphics card's Vulkan driver to use the GPU."
 [[ -z $quality ]] || { [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )); } || die "quality must be 1 to 100"
 
 # Remembered choices from the last run
@@ -515,7 +557,7 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     # Only offer a GPU choice when there is one to make; the default comes first
     gpu_items=()
     if [[ -z $gpu ]]; then
-        mapfile -t gpu_list < <(gpus)
+        gpu_list=("${GPU_LIST[@]}")
         if (( ${#gpu_list[@]} > 1 )); then
             for g in "${upscayl_gpu:-auto}" auto "${gpu_list[@]%% *}"; do
                 case $g in
@@ -530,6 +572,7 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
 
     warn=""
     (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
+    [[ -z $gpu_warn ]] || warn+="\n⚠ $gpu_warn"
     (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
 
     # zenity forms have no tooltips, so the custom-width help is shown in the window text
@@ -625,6 +668,7 @@ if (( still )); then last_image_format=$format; else last_format=$format; fi
 echo "Input:  ${about// × /×}"
 q_note=", quality $quality%"; [[ $format != png ]] || q_note=""
 echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), GPU $gpu"
+[[ -z $gpu_warn ]] || echo "Note: $gpu_warn"
 
 # Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB.
 # The slow steps run in the background so that closing the terminal or a kill stops them

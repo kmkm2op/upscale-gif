@@ -381,7 +381,16 @@ function Find-Upscayl([switch]$Installed) {
         return $null
     }
     $candidates = @()
-    if (-not $Installed) { $candidates += (Join-Path $BundleBin 'upscayl-bin.exe'), (Join-Path $BundleBin 'upscayl-bin') }
+    if (-not $Installed) {
+        $candidates += (Join-Path $BundleBin 'upscayl-bin.exe'), (Join-Path $BundleBin 'upscayl-bin')
+        # Report a missing vulkan-1.dll through the exit code instead of a Windows error box
+        if ($OnWindows -and -not ('UpscaleGif.ErrorMode' -as [type])) {
+            try {
+                Add-Type -Namespace UpscaleGif -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);'
+                [void][UpscaleGif.ErrorMode]::SetErrorMode(1)   # SEM_FAILCRITICALERRORS, inherited by child processes
+            } catch { }
+        }
+    }
     $candidates += @(Get-Command upscayl-bin, upscayl-ncnn -CommandType Application -ErrorAction SilentlyContinue |
         ForEach-Object { $_.Source })
     $candidates += @(Get-UpscaylInstallDirs | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'resources\bin\upscayl-bin.exe' })
@@ -654,6 +663,32 @@ function Get-Gpus {
     $r = Invoke-Tool $script:Upscayl @('-i', $missing, '-o', $missing, '-m', $script:ModelDir[$m], '-n', $m) -Capture -TimeoutSec 30
     @(Lines ($r.Out + "`n" + $r.Err) | ForEach-Object { if ($_ -match '^\[(\d+) (.*)\]  queueC=') { "$($Matches[1]) $($Matches[2])" } })
 }
+# Software Vulkan drivers run on the CPU: they work, but extremely slowly
+function Test-SoftwareGpu([string]$Line) { $Line -match 'llvmpipe|lavapipe|swiftshader' }
+$NoGpuHelp = if ($OnWindows) {
+    "No GPU with a Vulkan driver was found, and upscale-gif needs one.`n" +
+    "Install or update the driver for your graphics card from AMD, NVIDIA or Intel (the basic " +
+    "driver from Windows Update may not include Vulkan). Virtual machines and Remote Desktop " +
+    "sessions usually have no Vulkan GPU."
+} else {
+    "No GPU with a Vulkan driver was found, and upscale-gif needs one.`n" +
+    "Install the Vulkan driver for your graphics card (Mesa for AMD and Intel, NVIDIA's own " +
+    "driver for NVIDIA). Virtual machines and remote sessions usually have no Vulkan GPU."
+}
+# Why the bundled upscaler can't run, or $null
+function Get-BundleError {
+    if ($script:Upscayl -or $env:UPSCAYL_BIN) { return $null }
+    $b = @((Join-Path $BundleBin 'upscayl-bin.exe'), (Join-Path $BundleBin 'upscayl-bin') | Where-Object { Test-Path -LiteralPath $_ })
+    if (-not $b) { return $null }
+    try { $r = Invoke-Tool $b[0] @('-h') -Capture -TimeoutSec 10 } catch { return "the bundled upscaler can't start: $($_.Exception.Message)" }
+    # 0xC0000135: a DLL is missing; the only one not shipped or part of Windows is vulkan-1.dll
+    if ($r.Code -eq -1073741515) {
+        return "the bundled upscaler can't start because vulkan-1.dll is missing. It comes with the " +
+            'graphics driver: install or update the driver for your graphics card from AMD, NVIDIA or Intel.'
+    }
+    $first = @(Lines ($r.Err + "`n" + $r.Out))[0]
+    "the bundled upscaler can't start: $(if ($first) { $first } else { "exit code $($r.Code)" })"
+}
 
 function Get-Encoders {
     $set = New-Object 'Collections.Generic.HashSet[string]'
@@ -678,6 +713,7 @@ function Show-Check {
     }
     if (Test-Bundled) { Write-Host "Upscayl binary: $script:Upscayl (bundled)" }
     elseif ($script:Upscayl) { Write-Host "Upscayl binary: $script:Upscayl" }
+    elseif (Get-BundleError) { Write-Host "Upscayl binary: NOT WORKING, $(Get-BundleError)"; $ok = $false }
     else { Write-Host 'Upscayl binary: NOT FOUND (install Upscayl or set UPSCAYL_BIN)'; $ok = $false }
     if ($script:Models) { Write-Host "Models folder:  $script:Models"; Write-Host "Models:         $($builtin -join ' ')" }
     else { Write-Host 'Models folder:  NOT FOUND (set UPSCAYL_MODELS)'; $ok = $false }
@@ -689,10 +725,20 @@ function Show-Check {
         Write-Host "Custom models:  $script:CustomModels (from $src)"
         Write-Host "                $(if ($custom) { $custom -join ' ' } else { 'no usable .param/.bin pairs' })"
     }
-    if ($script:Upscayl) {
+    if ($script:Upscayl -and $script:Models) {
         Write-Host 'GPUs:'
-        foreach ($g in (Get-Gpus)) { Write-Host "  $g" }
-        Write-Host "  default: $(if ($script:UpscaylGpu) { "$script:UpscaylGpu (from Upscayl settings)" } else { 'auto' })"
+        $gpuList = @(Get-Gpus)
+        if (-not $gpuList) {
+            Write-Host '  NONE FOUND'
+            foreach ($l in ($NoGpuHelp -split "`n")) { Write-Host "  $l" }
+            $ok = $false
+        } else {
+            foreach ($g in $gpuList) {
+                Write-Host "  $g"
+                if (Test-SoftwareGpu $g) { Write-Host '    (software renderer on the CPU: works, but very slowly)' }
+            }
+            Write-Host "  default: $(if ($script:UpscaylGpu) { "$script:UpscaylGpu (from Upscayl settings)" } else { 'auto' })"
+        }
     }
     if ($script:FFmpeg) {
         $v = (-split ((Lines (Invoke-Tool $script:FFmpeg @('-version') -Capture).Out) | Select-Object -First 1))[2]
@@ -765,6 +811,8 @@ function Invoke-Main {
 
     if (-not $script:FFmpeg) { Fail 'ffmpeg not found. Install it (for example "winget install Gyan.FFmpeg") or put ffmpeg.exe and ffprobe.exe next to this script.' }
     if (-not $script:FFprobe) { Fail "found $script:FFmpeg but no ffprobe next to it" }
+    $bundleError = Get-BundleError
+    if ($bundleError) { Fail $bundleError }
     if (-not $script:Upscayl) { Fail 'Upscayl not found. Install it from upscayl.org, or set UPSCAYL_BIN to the path of upscayl-bin.exe (run with -c for details).' }
     if (-not $script:Models) { Fail "found $script:Upscayl but no models folder next to it; set UPSCAYL_MODELS" }
     $gpu = if ($Gpu) { $Gpu.ToLowerInvariant() } else { '' }
@@ -778,6 +826,19 @@ function Invoke-Main {
         }
     }
     if ($gpu -and $gpu -notmatch '^(auto|\d+(,\d+)*)$') { Fail 'GPU must be auto, a number or a list like 0,1 (see -c)' }
+    # Check the GPU before asking for anything, rather than failing after extracting the frames
+    $script:GpuList = @(Get-Gpus)
+    if (-not $script:GpuList) { Fail $NoGpuHelp }
+    foreach ($g in @($gpu -split ',' | Where-Object { $_ -and $_ -ne 'auto' })) {
+        if (-not @($script:GpuList | Where-Object { ($_ -split ' ', 2)[0] -eq $g })) {
+            Fail "there is no GPU $g. Available: $($script:GpuList -join '; ')"
+        }
+    }
+    $gpuWarn = ''
+    if (-not @($script:GpuList | Where-Object { -not (Test-SoftwareGpu $_) })) {
+        $gpuWarn = "Only a software Vulkan driver was found ($((($script:GpuList[0]) -split ' ', 2)[1])): upscaling runs on the CPU " +
+            "and is very slow. Install your graphics card's driver to use the GPU."
+    }
     $quality = $Quality -replace '%$', ''
     if ($quality -and ($quality -notmatch '^\d+$' -or [int]$quality -lt 1 -or [int]$quality -gt 100)) { Fail 'quality must be 1 to 100' }
 
@@ -949,7 +1010,7 @@ function Invoke-Main {
         # Only offer a GPU choice when there is one to make; the default comes first
         $gpuValues = @(); $gpuItems = @()
         if (-not $gpu) {
-            $gpuList = @(Get-Gpus)
+            $gpuList = $script:GpuList
             if ($gpuList.Count -gt 1) {
                 $first = if ($script:UpscaylGpu) { $script:UpscaylGpu } else { 'auto' }
                 foreach ($g in @($first, 'auto') + @($gpuList | ForEach-Object { ($_ -split ' ', 2)[0] })) {
@@ -966,6 +1027,7 @@ function Invoke-Main {
 
         $warn = ''
         if ($count -gt 500) { $warn += "`n$count frames: this will take a while." }
+        if ($gpuWarn) { $warn += "`n$gpuWarn" }
         if ($need -gt $free) { $warn += "`nNot enough free space in $workRoot." }
         $customHelp = "Custom width: type a width in pixels, e.g. $(Even ($srcW * 3)), to use instead of Output size. " +
             'Height follows the original aspect ratio, and both are rounded to even numbers. ' +
@@ -1049,6 +1111,7 @@ function Invoke-Main {
     Write-Host "Input:  $($about -replace " $x ", 'x')"
     $qNote = if ($format -eq 'png') { '' } else { ", quality $q%" }
     Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), GPU $gpu"
+    if ($gpuWarn) { Write-Host "Note: $gpuWarn" }
 
     # Remove work folders left behind by runs that were killed (e.g. the window was closed)
     Get-ChildItem -LiteralPath $workRoot -Directory -Filter 'upscale-gif.*' -ErrorAction SilentlyContinue |

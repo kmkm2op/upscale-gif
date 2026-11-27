@@ -18,7 +18,11 @@ What you need
 -------------
 
 - Windows 10 or 11, 64-bit (PowerShell is built in)
-- A GPU with a Vulkan driver (any recent AMD, NVIDIA or Intel GPU with its normal driver)
+- A GPU with a Vulkan driver: AMD Radeon HD 7000 or newer, NVIDIA GeForce GTX 600 or
+  newer, or Intel 6th-gen Core graphics or newer, with the normal driver from AMD,
+  NVIDIA or Intel. Virtual machines and Remote Desktop sessions usually have none.
+- Recommended: a dedicated GPU with 4 GB or more of video memory. Integrated GPUs and
+  cards with less memory work, but more slowly.
 
 
 Install

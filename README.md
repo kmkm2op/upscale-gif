@@ -80,7 +80,7 @@ This installs to `~/.local/share/upscale-gif` (no root needed) and adds an appli
 entry, a desktop shortcut, "Open with" for animations and videos, a Dolphin right-click
 action and the `upscale-gif` command.
 
-You need a GPU with a Vulkan driver. On Linux you also need glibc 2.35+ (Ubuntu 22.04,
+You need a GPU with a Vulkan driver (see [GPU](#gpu)). On Linux you also need glibc 2.35+ (Ubuntu 22.04,
 Debian 12, Fedora 36 or newer) and `zenity` for the windows (`kdialog` is used for the file
 picker when available).
 
@@ -223,8 +223,34 @@ choosing the folder.
 
 ## GPU
 
+### Requirements
+
+Upscaling runs on the GPU through Vulkan, so any GPU with a Vulkan driver works:
+
+- **AMD:** Radeon HD 7000 series (GCN, 2012) or newer
+- **NVIDIA:** GeForce GTX 600 series (Kepler) or newer
+- **Intel:** 6th-gen Core integrated graphics (HD/UHD 500 series) or newer, Iris Xe, Arc
+
+The normal driver is enough: Mesa (`mesa-vulkan-drivers`, `vulkan-radeon`, `vulkan-intel`)
+on Linux, or the AMD/NVIDIA/Intel driver on Windows. Virtual machines and Remote Desktop
+sessions usually have no Vulkan GPU. A software Vulkan driver (llvmpipe, lavapipe,
+SwiftShader) works but runs on the CPU and is very slow; upscale-gif warns about it.
+
+Video memory is not a hard limit: each frame is split into tiles sized to fit the GPU's
+memory, so 1–2 GB cards work, just more slowly.
+
+### Recommendations
+
+- A dedicated GPU with 4 GB or more of video memory; integrated GPUs work but are slower.
+- For long videos, a lighter model. On an RX 9070 XT, a 480×270 frame upscaled to
+  1920×1080 takes about 0.06 s with `upscayl-lite-4x` and 0.5 s with
+  `upscayl-standard-4x`; a 1000-frame clip is then about 1 or 8 minutes.
+
+### Choosing and checking the GPU
+
 The GPU is chosen by `-g`, else by Upscayl's **GPU ID** setting, else automatically.
-`upscale-gif -c` lists the GPUs with the IDs Upscayl uses.
+`upscale-gif -c` lists the GPUs with the IDs Upscayl uses, or explains what to install
+when none is found. A run stops with the same explanation before asking for anything.
 
 ## Notes
 

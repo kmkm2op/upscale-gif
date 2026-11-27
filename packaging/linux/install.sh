@@ -84,7 +84,13 @@ command -v zenity >/dev/null || problems+=("zenity is missing, so the windows ca
     || problems+=("The upscaler can't start: $("$DEST/bin/upscayl-bin" -h 2>&1 | head -1)
   It needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer), libgomp and the Vulkan loader
   (e.g. sudo apt install libgomp1 libvulkan1 / sudo dnf install libgomp vulkan-loader)")
-"$DEST/upscale-gif" -c >/dev/null 2>&1 || problems+=("Some checks failed; run: upscale-gif -c")
+if ! check=$("$DEST/upscale-gif" -c 2>&1); then
+    if [[ $check == *"NONE FOUND"* ]]; then
+        problems+=("$(sed -n '/NONE FOUND/,/vulkaninfo/{/NONE FOUND/d; s/^  //; p}' <<<"$check")")
+    else
+        problems+=("Some checks failed; run: upscale-gif -c")
+    fi
+fi
 
 echo
 echo "Installed. Start \"Upscale GIF\" from the application menu or the desktop, right-click an"

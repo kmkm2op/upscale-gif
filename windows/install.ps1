@@ -128,7 +128,7 @@ try {
     if ($check.Ok) {
         [void](Show-Message "$AppName is installed.`n`n$how")
     } else {
-        [void](Show-Message "$AppName is installed, but something it needs is missing:`n`n$($check.Text)`n`nInstall ffmpeg (winget install Gyan.FFmpeg) and Upscayl (upscayl.org), then try again.`n`n$how" 'Warning')
+        [void](Show-Message "$AppName is installed, but something it needs is missing:`n`n$($check.Text)`n`nFix the items marked above, then try again.`n`n$how" 'Warning')
     }
 } catch {
     Write-Host $_.Exception.Message
