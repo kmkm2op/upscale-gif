@@ -3,14 +3,17 @@
 # with Upscayl and save it as gif, webp, mp4, webm or avif (images also as png or jpg).
 #
 # Usage: upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality%] [-d downsampler]
-#                    [-g gpu] [-o output] [input]
+#                    [-g gpu] [-t auto|ram|disk] [-o output] [input]
 #        upscale-gif -c    (show detected tools, models and GPUs)
 # Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
 # mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
 # Frames are upscaled by the model, then downsampled to the chosen size with -d: lanczos
 # (default), spline, bicubic or area. Every frame keeps its original timing, and audio is kept
 # for mp4/webm output. -m nearest is nearest-neighbour scaling for pixel art: no AI and no
-# GPU, whole multiples (2x, 3x...) of the size.
+# GPU, whole multiples (2x, 3x...) of the size. -t: where the temporary frames go; auto keeps
+# them in RAM when they fit in half the available memory, else on disk.
+# Made for GIFs, short clips and images; long videos are better served by a video upscaler
+# such as Video2X or REAL Video Enhancer.
 #
 # Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the dialogs, zenity
 # (kdialog is used for the file picker when available). The release packages include
@@ -29,6 +32,8 @@ set -euo pipefail
 
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/upscale-gif.conf
 WORKROOT=${XDG_CACHE_HOME:-$HOME/.cache}
+RAMROOT=/dev/shm
+temp=auto
 model="" format="" width="" height="" output="" input="" gpu="" quality="" downsampler=""
 # Release packages carry upscayl-bin, ffmpeg and ffprobe in bin/ and the models in models/
 SELF_DIR=$(dirname "$(realpath "$0")")
@@ -373,6 +378,11 @@ check() {
     fi
     echo "Settings window: $(have zenity && echo zenity || echo 'unavailable (install zenity; command-line options still work)')"
     echo "File picker:     $(have kdialog && echo kdialog || { have zenity && echo zenity || echo unavailable; })"
+    if (( $(ram_room) > 0 )); then
+        echo "Temporary files: in RAM ($RAMROOT) when under $(human "$(ram_room)") (half the available memory), else $WORKROOT"
+    else
+        echo "Temporary files: $WORKROOT ($RAMROOT isn't a usable RAM disk)"
+    fi
     return $ok
 }
 
@@ -389,8 +399,37 @@ even() { echo $(( ($1 + 1) / 2 * 2 )); }
 human() { numfmt --to=iec --suffix=B "$1"; }
 # Temporary space: PNG frames compress to roughly half of raw RGBA; original + upscaled copies
 space_for() { echo $(( count * src_w * src_h * 4 * (1 + $1 * $1) / 2 )); }
+# Bytes the temporary frames may take in RAM ($RAMROOT, a tmpfs): half of the memory that is
+# available, so the rest of the system (a game, the upscaler itself) keeps plenty; with
+# "forced", all but 2 GB of it. Never more than the tmpfs has free.
+ram_room() {
+    local avail shm room
+    [[ -d $RAMROOT && -w $RAMROOT && $(stat -f -c %T "$RAMROOT" 2>/dev/null) == tmpfs ]] || { echo 0; return; }
+    avail=$(awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo 2>/dev/null)
+    shm=$(df --output=avail -B1 "$RAMROOT" 2>/dev/null | tail -1)
+    [[ $avail =~ ^[0-9]+$ && $shm =~ ^[0-9]+$ ]] || { echo 0; return; }
+    if [[ ${1:-} == forced ]]; then room=$(( avail - 2 * 1024 ** 3 )); else room=$(( avail / 2 )); fi
+    (( room <= shm - 256 * 1024 ** 2 )) || room=$(( shm - 256 * 1024 ** 2 ))
+    echo $(( room > 0 ? room : 0 ))
+}
+# Picks RAM or disk for $need bytes (temp_where) and describes it (space_note)
+choose_temp() {
+    temp_root=$WORKROOT temp_where=disk
+    if [[ $temp == ram ]] && (( need <= $(ram_room forced) )) || { [[ $temp == auto ]] && (( need <= $(ram_room) )); }; then
+        temp_root=$RAMROOT temp_where=RAM
+        space_note="Needs ~$(human "$need") of temporary space, kept in RAM"
+    else
+        space_note="Needs ~$(human "$need") of temporary space on disk ($(human "$free") free)"
+    fi
+}
+# Added to errors: a full tmpfs makes the tools fail with unclear messages
+ram_hint() {
+    [[ ${temp_where:-} == RAM ]] || return 0
+    (( $(df --output=avail -B1 "$RAMROOT" | tail -1) > 64 * 1024 ** 2 )) \
+        || echo " (the temporary space in RAM ran out; try -t disk)"
+}
 
-while getopts "m:w:H:f:q:d:g:o:ch" opt; do
+while getopts "m:w:H:f:q:d:g:t:o:ch" opt; do
     case $opt in
         m) model=$OPTARG ;;
         w) width=$OPTARG ;;
@@ -400,6 +439,7 @@ while getopts "m:w:H:f:q:d:g:o:ch" opt; do
         d) downsampler=${OPTARG,,} ;;
         o) output=$OPTARG ;;
         g) gpu=${OPTARG,,} ;;
+        t) temp=${OPTARG,,} ;;
         c) check; exit ;;
         h) sed -n '5,/^#$/{/^#$/d; s/^# \{0,1\}//p}' "$0"; exit 0 ;;
         *) exit 1 ;;
@@ -444,6 +484,7 @@ for line in "${GPU_LIST[@]}"; do software_gpu "$line" || { gpu_warn=x; break; };
     || gpu_warn="Only a software Vulkan driver was found (${GPU_LIST[0]#* }): upscaling runs on the CPU and is very slow. Install your graphics card's Vulkan driver to use the GPU."
 [[ -z $quality ]] || { [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )); } || die "quality must be 1 to 100"
 [[ -z $downsampler || " ${DOWNSAMPLERS[*]} " == *" $downsampler "* ]] || die "downsampler must be one of: ${DOWNSAMPLERS[*]}"
+[[ $temp =~ ^(auto|ram|disk)$ ]] || die "-t must be auto, ram or disk"
 
 # Remembered choices from the last run
 last_model="" last_format=gif last_image_format="" last_quality=80 last_downsampler=lanczos last_dir=$HOME
@@ -530,7 +571,7 @@ max_h=$((src_h * 4))
 need=$(space_for 4)
 mkdir -p "$WORKROOT" || die "can't create $WORKROOT"
 free=$(( $(df --output=avail -B1 "$WORKROOT" | tail -1) ))
-space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
+choose_temp
 
 # A single frame is a still image: it can also be saved as png or jpg
 still=0; (( count == 1 )) && still=1
@@ -601,13 +642,13 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     fi
 
     warn=""
-    (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
+    (( count > 500 )) && warn="\n⚠ $count frames: this will take a while. Long videos are better served by a video upscaler such as Video2X."
     [[ -z $gpu_warn ]] || warn+="\n⚠ $gpu_warn"
     if [[ -n $upscaler_error ]]; then
         e=${upscaler_error//&/&amp;}; e=${e//</&lt;}; e=${e//>/&gt;}
         warn+="\n⚠ Only nearest-neighbour scaling is available: <small>$e</small>"
     fi
-    (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
+    [[ $temp_where == RAM ]] || (( need <= free )) || warn+="\n⚠ Not enough free space in $WORKROOT."
 
     # zenity forms have no tooltips, so the custom-width help is shown in the window text
     custom_help="<small><b>Custom width:</b> type a width in pixels, e.g. <tt>$(even $((src_w * 3)))</tt>, to use instead of <i>Output size</i>.
@@ -689,7 +730,7 @@ else
     scale=$(model_scale "$model")
     max_w=$((src_w * scale)) need=$(space_for "$scale")
 fi
-space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
+choose_temp
 [[ $format =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]] || die "unsupported format: $format"
 [[ $still == 1 || ! $format =~ ^(png|jpg)$ ]] \
     || die "$format output is for single images, and $(basename "$input") has $count frames (use gif, webp, webm, avif or mp4)"
@@ -718,7 +759,10 @@ if (( nearest )); then
     [[ $req == "${out_w}×${out_h}" ]] \
         || echo "Note: nearest neighbour uses whole multiples of ${src_w}×${src_h}: ${out_w}×${out_h} (${scale}×) instead of $req."
 fi
-(( need <= free )) || die "not enough space in $WORKROOT: $space_note"
+if [[ $temp == ram && $temp_where != RAM ]]; then
+    die "the temporary frames (~$(human "$need")) don't fit in RAM: $(human "$(ram_room forced)") can be used. Use -t disk or -t auto."
+fi
+[[ $temp_where == RAM ]] || (( need <= free )) || die "not enough space in $WORKROOT: $space_note"
 (( nearest || out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's ${scale}× (${max_w}px); the last step will enlarge."
 
 output=${output:-${input%.*}_${out_w}x${out_h}.$format}
@@ -742,8 +786,11 @@ else
     echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), $downsampler downsampling, GPU $gpu"
 fi
 [[ -z $gpu_warn ]] || echo "Note: $gpu_warn"
+if [[ $temp_where == RAM ]]; then echo "Temp:   ~$(human "$need") in RAM ($RAMROOT)"
+else echo "Temp:   ~$(human "$need") on disk ($WORKROOT)"; fi
 
-# Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB.
+# Temporary frames go to RAM only when they fit comfortably (choose_temp), else to disk; not
+# to /tmp, which may be a small tmpfs. Upscaled frames can take several GB.
 # The slow steps run in the background so that closing the terminal or a kill stops them
 # too (bash only runs traps between commands) and the work folder is always removed.
 work="" child=""
@@ -756,7 +803,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
-work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
+work=$(mktemp -d "$temp_root/upscale-gif.XXXXXX")
 mkdir "$work/frames" "$work/upscaled"
 # Nearest neighbour scales the original frames while encoding
 scaled=$work/upscaled; (( ! nearest )) || scaled=$work/frames
@@ -847,7 +894,7 @@ else
 fi
 watch 0 3 "Reading frame %d of %d" count_extracted - - -- \
     ffmpeg -nostdin -v error -i "$input" "${extract[@]}" -fps_mode passthrough "$work/frames/%06d.png" \
-    || die "ffmpeg could not read the frames of $(basename "$input")"
+    || die "ffmpeg could not read the frames of $(basename "$input")$(ram_hint)"
 extracted=$(count_extracted)
 (( extracted > 0 )) || die "no frames could be decoded from $(basename "$input")"
 if (( extracted != count )); then
@@ -870,9 +917,9 @@ if (( ! nearest )); then
     watch 3 85 "Upscaling frame %d of %d" count_upscaled eta "$work/upscayl.log" -- \
         "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
         -z "$scale" -s "$scale" "${gpu_arg[@]}" -j "2:$procs:$savers" -f png \
-        || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
+        || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed$(ram_hint)"; }
     upscaled=$(count_upscaled)
-    (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
+    (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames$(ram_hint)"; }
 fi
 
 # --- Reassemble with each frame's original timing ---------------------------------------
@@ -942,7 +989,7 @@ single=(); (( ! still )) || single=(-frames:v 1)   # a still AVIF, not a one-fra
 # GIF output only appears at the end (the palette needs every frame first)
 encode() {
     watch "$enc_from" 100 "Encoding $format, frame %d of %d" count_encoded eta-started - -- "$@" \
-        || die "ffmpeg could not encode $format"
+        || die "ffmpeg could not encode $format$(ram_hint)"
 }
 case $format in
     gif)

@@ -17,6 +17,11 @@ For pixel art, choose "nearest" in the model list: it scales by whole multiples 
 with sharp square pixels, without AI, and works even without a GPU. GIF, WebP (always
 lossless with nearest) and PNG suit pixel art best.
 
+It is made for GIFs, short clips and images. For long videos, a dedicated video upscaler
+such as Video2X (github.com/k4yt3x/video2x) or REAL Video Enhancer
+(github.com/TNTwise/REAL-Video-Enhancer) is a better fit: they need far less temporary
+space.
+
 
 Requirements
 ------------
@@ -63,6 +68,8 @@ Command line:
     upscale-gif [-m model] [-w width | -H height] [-f format] [-q quality] [-d downsampler] [-g gpu] [-o output] [file]
     -d: how the AI result is resized: lanczos (default, sharpest), spline, bicubic or area
         (softest, no halos)
+    -t: where the temporary frames go: auto (RAM when they fit in half the available
+        memory, else disk; the default), ram or disk
     upscale-gif -c    show the detected upscaler, models, GPUs and ffmpeg
     upscale-gif -h    help
 

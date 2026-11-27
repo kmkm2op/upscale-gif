@@ -11,4 +11,8 @@ Vulkan driver. On Linux you also need glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedo
 newer) and zenity, which shows the settings and progress dialogs (most desktops have it).
 The Windows version needs nothing extra.
 
+Made for GIFs, short clips and images; for long videos, a dedicated video upscaler such as
+[Video2X](https://github.com/k4yt3x/video2x) or
+[REAL Video Enhancer](https://github.com/TNTwise/REAL-Video-Enhancer) is a better fit.
+
 `upscale-gif-*-sources.tar.gz` holds the source code of the bundled GPL/AGPL programs.

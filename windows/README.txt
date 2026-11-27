@@ -17,6 +17,11 @@ For pixel art, choose "nearest" in the model list: it scales by whole multiples 
 with sharp square pixels, without AI, and works even without a GPU. GIF, WebP (always
 lossless with nearest) and PNG suit pixel art best.
 
+It is made for GIFs, short clips and images. For long videos, a dedicated video upscaler
+such as Video2X (github.com/k4yt3x/video2x) or REAL Video Enhancer
+(github.com/TNTwise/REAL-Video-Enhancer) is a better fit: they need far less temporary
+space.
+
 
 What you need
 -------------

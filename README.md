@@ -13,6 +13,13 @@ The output keeps every frame's original timing, its transparency and its audio.
   out, so it also works from a desktop launcher or file manager
 - **Platforms:** Linux (bash) and Windows (PowerShell)
 
+> **Made for GIFs, short clips and images.** Every frame is saved as an image, upscaled, then
+> put back together, which is ideal for keeping a GIF's exact timing and transparency but
+> slow and space-hungry for long videos. For those, use a dedicated video upscaler such as
+> [Video2X](https://github.com/k4yt3x/video2x) or
+> [REAL Video Enhancer](https://github.com/TNTwise/REAL-Video-Enhancer) (both free, for
+> Linux and Windows).
+
 ## How it works
 
 1. Probes the input and works out each frame's exact duration (variable frame timing is
@@ -128,6 +135,7 @@ upscale-gif -h     # help
 | `-q quality`| 1–100 (default 80); ignored for `png` |
 | `-d downsampler` | `lanczos` (default), `spline`, `bicubic` or `area`; see [Downsamplers](#downsamplers) |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
+| `-t where`  | Temporary frames: `auto` (default), `ram` or `disk`; see [Temporary files](#temporary-files). Linux only |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 
 Anything you don't give on the command line is asked for:
@@ -284,6 +292,17 @@ memory, so 1–2 GB cards work, just more slowly.
 The GPU is chosen by `-g`, else by Upscayl's **GPU ID** setting, else automatically.
 `upscale-gif -c` lists the GPUs with the IDs Upscayl uses, or explains what to install
 when none is found. A run stops with the same explanation before asking for anything.
+
+## Temporary files
+
+The frames are saved as PNG files while they're worked on: the originals plus the upscaled
+copies. The settings window shows how much space that needs.
+
+On Linux they're kept **in RAM** (`/dev/shm`) when they fit in half of the memory that's
+currently available, which spares the drive; otherwise they go to `~/.cache`. They're
+deleted when the run ends. `-t ram` uses RAM even for larger jobs (up to all but 2 GB of the
+available memory), and `-t disk` always uses the drive. `upscale-gif -c` shows the current
+limit. The Windows version always uses the drive (`%TEMP%`, or `UPSCALE_GIF_TEMP`).
 
 ## Notes
 

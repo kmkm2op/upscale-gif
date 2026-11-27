@@ -1056,7 +1056,7 @@ function Invoke-Main {
         }
 
         $warn = ''
-        if ($count -gt 500) { $warn += "`n$count frames: this will take a while." }
+        if ($count -gt 500) { $warn += "`n$count frames: this will take a while. Long videos are better served by a video upscaler such as Video2X." }
         if ($gpuWarn) { $warn += "`n$gpuWarn" }
         if ($upscalerError) { $warn += "`nOnly nearest-neighbour scaling is available: $upscalerError" }
         if ($need -gt $free) { $warn += "`nNot enough free space in $workRoot." }
