@@ -81,7 +81,7 @@ entry, a desktop shortcut, "Open with" for animations and videos, a Dolphin righ
 action and the `upscale-gif` command.
 
 You need a GPU with a Vulkan driver (see [GPU](#gpu)) for the AI models. On Linux you also need glibc 2.35+ (Ubuntu 22.04,
-Debian 12, Fedora 36 or newer) and `zenity` for the windows (`kdialog` is used for the file
+Debian 12, Fedora 36 or newer) and `zenity` for the settings and progress dialogs (`kdialog` is used for the file
 picker when available).
 
 Run `upscale-gif -c` to see what was detected.

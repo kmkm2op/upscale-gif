@@ -27,7 +27,7 @@ Requirements
   Intel, NVIDIA's own driver for NVIDIA). Virtual machines usually have none.
 - Recommended: a dedicated GPU with 4 GB or more of video memory. Integrated GPUs and
   cards with less memory work, but more slowly.
-- zenity, for the windows (most desktops have it; otherwise install it with your
+- zenity, for the settings and progress dialogs (most desktops have it; otherwise install it with your
   package manager)
 
 

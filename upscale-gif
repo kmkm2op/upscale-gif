@@ -12,7 +12,7 @@
 # for mp4/webm output. -m nearest is nearest-neighbour scaling for pixel art: no AI and no
 # GPU, whole multiples (2x, 3x...) of the size.
 #
-# Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the windows, zenity
+# Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the dialogs, zenity
 # (kdialog is used for the file picker when available). The release packages include
 # Upscayl's upscaler, models and ffmpeg in bin/ and models/ next to this script; without
 # them it uses ffmpeg/ffprobe 7+ (8+ for animated WebP input) from PATH and an installed
