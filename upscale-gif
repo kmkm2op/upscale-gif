@@ -7,7 +7,8 @@
 # Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
 # mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
 # Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
-# keeps its original timing, and audio is kept for mp4/webm output.
+# keeps its original timing, and audio is kept for mp4/webm output. -m nearest is nearest-
+# neighbour scaling for pixel art: no AI and no GPU, whole multiples (2x, 3x...) of the size.
 #
 # Requirements: bash 4+, GNU coreutils, a Vulkan GPU driver and, for the windows, zenity
 # (kdialog is used for the file picker when available). The release packages include
@@ -63,6 +64,9 @@ MODEL_ORDER=(upscayl-standard-4x upscayl-lite-4x digital-art-4x high-fidelity-4x
     4xNomos8kSC 4x_NMKD-Superscale-SP_178000_G remacri-4x ultrasharp-4x ultramix-balanced-4x
     uniscale_restore realesrgan-x4plus RealESRGAN_General_x4_v3 realesrgan-x4plus-anime
     4xHFA2k)
+# Not an AI model: plain nearest-neighbour scaling, which keeps pixel art's hard edges
+NEAREST=nearest
+NEAREST_DESC="Pixel art: nearest neighbour, sharp square pixels (no AI, no GPU needed)"
 declare -A FMT_DESC=(
     [gif]="GIF" [webm]="WebM (VP9, keeps transparency and audio)"
     [avif]="AVIF (AV1, keeps transparency)" [mp4]="MP4 (H.264, keeps audio, no transparency)"
@@ -257,7 +261,7 @@ upscayl_custom=${settings[0]:-} upscayl_gpu=${settings[1]:-}
 CUSTOM_MODELS=${UPSCAYL_CUSTOM_MODELS:-$upscayl_custom}
 
 # Every usable model (built-in first) and the folder it lives in
-declare -A MODEL_DIR=()
+declare -A MODEL_DIR=([$NEAREST]=-)
 MODEL_LIST=()
 add_models() {
     local p n
@@ -288,7 +292,7 @@ GPU_LIST=() gpus_loaded=""
 load_gpus() { [[ -n $gpus_loaded ]] || { mapfile -t GPU_LIST < <(gpus); gpus_loaded=1; }; }
 # Software Vulkan drivers run on the CPU: they work, but extremely slowly
 software_gpu() { [[ ${1,,} =~ llvmpipe|lavapipe|swiftshader ]]; }
-NO_GPU_HELP="No GPU with a Vulkan driver was found, and upscale-gif needs one.
+NO_GPU_HELP="No GPU with a Vulkan driver was found, and the AI models need one.
 Install the Vulkan driver for your graphics card: for AMD and Intel it is part of Mesa
 (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch),
 and for NVIDIA it comes with NVIDIA's own driver. Virtual machines and remote desktop
@@ -324,6 +328,7 @@ check() {
     fi
     echo "Models folder:  ${MODELS:-NOT FOUND (set UPSCAYL_MODELS)}"; [[ -n $MODELS ]] || ok=1
     [[ -n $MODELS ]] && echo "Models:         ${builtin[*]}"
+    echo "                (also $NEAREST: nearest neighbour for pixel art, no AI or GPU needed)"
     [[ -z $APP_MODELS ]] || { echo "Upscayl app:    $APP_MODELS"; echo "                ${app[*]}"; }
     src="Upscayl settings"; [[ -n ${UPSCAYL_CUSTOM_MODELS:-} ]] && src=UPSCAYL_CUSTOM_MODELS
     if [[ -z $CUSTOM_MODELS ]]; then
@@ -400,20 +405,31 @@ if [[ -n $output && $out_ext =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]]; then
 fi
 
 for f in ffmpeg ffprobe numfmt; do have $f || die "$f is required but not installed"; done
-[[ -z $(bundle_error) ]] || die "$(bundle_error)"
-[[ -n $UPSCAYL ]] || die "Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
-[[ -n $MODELS ]] || die "found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
 [[ -z $gpu || $gpu =~ ^(auto|[0-9]+(,[0-9]+)*)$ ]] || die "GPU must be auto, a number or a list like 0,1 (see -c)"
-# Check the GPU before asking for anything, rather than failing after extracting the frames
-load_gpus
-(( ${#GPU_LIST[@]} )) || die "$NO_GPU_HELP"
+# Check the upscaler and GPU before asking for anything, rather than failing after extracting
+# the frames. Without them only nearest-neighbour scaling is possible.
+upscaler_error=""
+if [[ $model != "$NEAREST" ]]; then
+    upscaler_error=$(bundle_error)
+    [[ -n $upscaler_error || -n $UPSCAYL ]] \
+        || upscaler_error="Upscayl not found. Install it, or set UPSCAYL_BIN to the path of upscayl-bin (run with -c for details)."
+    [[ -n $upscaler_error || -n $MODELS ]] || upscaler_error="found $UPSCAYL but no models folder next to it; set UPSCAYL_MODELS"
+    if [[ -z $upscaler_error ]]; then load_gpus; (( ${#GPU_LIST[@]} )) || upscaler_error=$NO_GPU_HELP; fi
+fi
+if [[ -n $upscaler_error ]]; then
+    [[ -z $model ]] || die "$upscaler_error
+(-m $NEAREST, nearest neighbour for pixel art, works without it.)"
+    # The settings window then offers only nearest neighbour, and says why
+    MODEL_DIR=([$NEAREST]=-) MODEL_LIST=()
+fi
 for g in ${gpu//,/ }; do
+    (( ${#GPU_LIST[@]} )) || break
     [[ $g == auto ]] || printf '%s\n' "${GPU_LIST[@]%% *}" | grep -qx "$g" \
         || die "there is no GPU $g. Available: $(printf '%s; ' "${GPU_LIST[@]}" | sed 's/; $//')"
 done
 gpu_warn=""
 for line in "${GPU_LIST[@]}"; do software_gpu "$line" || { gpu_warn=x; break; }; done
-[[ -n $gpu_warn ]] && gpu_warn="" \
+[[ -n $gpu_warn || ${#GPU_LIST[@]} == 0 ]] && gpu_warn="" \
     || gpu_warn="Only a software Vulkan driver was found (${GPU_LIST[0]#* }): upscaling runs on the CPU and is very slow. Install your graphics card's Vulkan driver to use the GPU."
 [[ -z $quality ]] || { [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )); } || die "quality must be 1 to 100"
 
@@ -528,9 +544,11 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     gui || die "missing -m/-f/-w options (and no desktop session for the settings window)"
 
     model_items=()
-    for m in "$last_model" "${MODEL_ORDER[@]}" "${MODEL_LIST[@]}"; do
+    for m in "$last_model" "${MODEL_ORDER[@]}" "$NEAREST" "${MODEL_LIST[@]}"; do
         [[ -n $m && -n ${MODEL_DIR[$m]:-} ]] || continue
-        if [[ -n ${DESC[$m]:-} ]]; then
+        if [[ $m == "$NEAREST" ]]; then
+            item="$m — $NEAREST_DESC"
+        elif [[ -n ${DESC[$m]:-} ]]; then
             item="$m — ${DESC[$m]}"
         else
             item=$m; is_custom "$m" && item+=" — Custom model"
@@ -556,7 +574,7 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
 
     # Only offer a GPU choice when there is one to make; the default comes first
     gpu_items=()
-    if [[ -z $gpu ]]; then
+    if [[ -z $gpu && -z $upscaler_error ]]; then
         gpu_list=("${GPU_LIST[@]}")
         if (( ${#gpu_list[@]} > 1 )); then
             for g in "${upscayl_gpu:-auto}" auto "${gpu_list[@]%% *}"; do
@@ -573,12 +591,17 @@ if [[ -z $model || -z $format || ( -z $width && -z $height ) ]]; then
     warn=""
     (( count > 500 )) && warn="\n⚠ $count frames: this will take a while."
     [[ -z $gpu_warn ]] || warn+="\n⚠ $gpu_warn"
+    if [[ -n $upscaler_error ]]; then
+        e=${upscaler_error//&/&amp;}; e=${e//</&lt;}; e=${e//>/&gt;}
+        warn+="\n⚠ Only nearest-neighbour scaling is available: <small>$e</small>"
+    fi
     (( need > free )) && warn+="\n⚠ Not enough free space in $WORKROOT."
 
     # zenity forms have no tooltips, so the custom-width help is shown in the window text
     custom_help="<small><b>Custom width:</b> type a width in pixels, e.g. <tt>$(even $((src_w * 3)))</tt>, to use instead of <i>Output size</i>.
 Height follows the original aspect ratio, and both are rounded to even numbers.
 Up to <b>$((src_w * 4))</b> px (4× the original) stays sharp with 4× models; beyond a model's scale it's stretched.
+<i>$NEAREST</i> uses whole multiples (2×, 3×…) of the original, rounding down, with no upper limit.
 Leave empty to use <i>Output size</i>.</small>"
 
     join() { local IFS='|'; echo "$*"; }
@@ -633,10 +656,15 @@ fi
 # --- Validate and work out the final size --------------------------------------------
 format=${format:-$default_format} quality=${quality:-80}
 [[ $quality =~ ^[0-9]+$ ]] && (( quality >= 1 && quality <= 100 )) || quality=80
-[[ -n $model && -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]}"
+[[ -n $model && -n ${MODEL_DIR[$model]:-} ]] || die "unknown model '$model'. Available: ${MODEL_LIST[*]} $NEAREST"
+nearest=0; [[ $model != "$NEAREST" ]] || nearest=1
 gpu=${gpu:-${upscayl_gpu:-auto}}
-scale=$(model_scale "$model")
-max_w=$((src_w * scale)) need=$(space_for "$scale")
+if (( nearest )); then
+    scale=1 max_w=0 need=$(space_for 0) gpu_warn=""
+else
+    scale=$(model_scale "$model")
+    max_w=$((src_w * scale)) need=$(space_for "$scale")
+fi
 space_note="Needs ~$(human $need) of temporary space ($(human $free) free)"
 [[ $format =~ ^(gif|mp4|webm|avif|png|jpg|webp)$ ]] || die "unsupported format: $format"
 [[ $still == 1 || ! $format =~ ^(png|jpg)$ ]] \
@@ -651,8 +679,23 @@ else
 fi
 (( out_w >= 2 )) || out_w=2
 (( out_h >= 2 )) || out_h=2
+pad=""
+if (( nearest )); then
+    # Whole multiples only, so every source pixel becomes the same size square. MP4 and WebM
+    # need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
+    if [[ -n $width ]]; then scale=$(( out_w / src_w )); else scale=$(( out_h / src_h )); fi
+    (( scale >= 1 )) || scale=1
+    req="${out_w}×${out_h}"
+    out_w=$((src_w * scale)) out_h=$((src_h * scale))
+    if [[ $format =~ ^(mp4|webm)$ ]] && (( out_w % 2 || out_h % 2 )); then
+        pad=",pad=$(even $out_w):$(even $out_h):0:0:black@0"
+        out_w=$(even $out_w) out_h=$(even $out_h)
+    fi
+    [[ $req == "${out_w}×${out_h}" ]] \
+        || echo "Note: nearest neighbour uses whole multiples of ${src_w}×${src_h}: ${out_w}×${out_h} (${scale}×) instead of $req."
+fi
 (( need <= free )) || die "not enough space in $WORKROOT: $space_note"
-(( out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's ${scale}× (${max_w}px); the last step will enlarge."
+(( nearest || out_w <= max_w )) || echo "Note: ${out_w}px is wider than the model's ${scale}× (${max_w}px); the last step will enlarge."
 
 output=${output:-${input%.*}_${out_w}x${out_h}.$format}
 [[ $(realpath -m "$output") != "$input" ]] || die "output would overwrite the input"
@@ -667,7 +710,12 @@ if (( still )); then last_image_format=$format; else last_format=$format; fi
 
 echo "Input:  ${about// × /×}"
 q_note=", quality $quality%"; [[ $format != png ]] || q_note=""
-echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), GPU $gpu"
+if (( nearest )); then
+    [[ $format != webp ]] || q_note=", lossless"
+    echo "Output: ${out_w}×${out_h} $format$q_note, nearest neighbour (${scale}×)"
+else
+    echo "Output: ${out_w}×${out_h} $format$q_note, model $model (${scale}×), GPU $gpu"
+fi
 [[ -z $gpu_warn ]] || echo "Note: $gpu_warn"
 
 # Work on disk, not /tmp (tmpfs/RAM): upscaled frames can be several GB.
@@ -685,6 +733,8 @@ trap cleanup EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
 work=$(mktemp -d "$WORKROOT/upscale-gif.XXXXXX")
 mkdir "$work/frames" "$work/upscaled"
+# Nearest neighbour scales the original frames while encoding
+scaled=$work/upscaled; (( ! nearest )) || scaled=$work/frames
 
 # --- Progress -----------------------------------------------------------------------------
 # Upscayl only reports progress per image, so progress comes from counting finished frames.
@@ -783,20 +833,22 @@ if (( extracted != count )); then
 fi
 
 # --- Upscale ------------------------------------------------------------------------------
-say "Upscaling $count frames with $model..."
-gpu_arg=(); [[ $gpu == auto ]] || gpu_arg=(-g "$gpu")
-# Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per CPU
-# thread made upscaling 2-5x faster without using more memory. -j takes one GPU thread
-# count per GPU.
-procs=2; [[ $gpu == auto ]] || { procs=${gpu//[0-9]/}; procs=$(printf '2%.0s' $(seq 0 ${#procs}) | sed 's/./&,/g; s/,$//'); }
-savers=$(nproc 2>/dev/null || echo 4); (( savers >= 2 )) || savers=2; (( savers <= 16 )) || savers=16
-up_start=$SECONDS
-watch 3 85 "Upscaling frame %d of %d" count_upscaled eta "$work/upscayl.log" -- \
-    "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
-    -z "$scale" -s "$scale" "${gpu_arg[@]}" -j "2:$procs:$savers" -f png \
-    || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
-upscaled=$(count_upscaled)
-(( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
+if (( ! nearest )); then
+    say "Upscaling $count frames with $model..."
+    gpu_arg=(); [[ $gpu == auto ]] || gpu_arg=(-g "$gpu")
+    # Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per CPU
+    # thread made upscaling 2-5x faster without using more memory. -j takes one GPU thread
+    # count per GPU.
+    procs=2; [[ $gpu == auto ]] || { procs=${gpu//[0-9]/}; procs=$(printf '2%.0s' $(seq 0 ${#procs}) | sed 's/./&,/g; s/,$//'); }
+    savers=$(nproc 2>/dev/null || echo 4); (( savers >= 2 )) || savers=2; (( savers <= 16 )) || savers=16
+    up_start=$SECONDS
+    watch 3 85 "Upscaling frame %d of %d" count_upscaled eta "$work/upscayl.log" -- \
+        "$UPSCAYL" -i "$work/frames" -o "$work/upscaled" -m "${MODEL_DIR[$model]}" -n "$model" \
+        -z "$scale" -s "$scale" "${gpu_arg[@]}" -j "2:$procs:$savers" -f png \
+        || { tail -20 "$work/upscayl.log" >&2; die "Upscayl failed"; }
+    upscaled=$(count_upscaled)
+    (( upscaled == count )) || { tail -20 "$work/upscayl.log" >&2; die "Upscayl produced $upscaled of $count frames"; }
+fi
 
 # --- Reassemble with each frame's original timing ---------------------------------------
 # The concat demuxer takes its time base from the images (1/25 s by default), which would
@@ -805,7 +857,7 @@ upscaled=$(count_upscaled)
 # the other formats end with a one-tick copy of the last frame.
 list=$work/frames.txt
 frame() {
-    local p=$work/upscaled/$(printf %06d "$1").png
+    local p=$scaled/$(printf %06d "$1").png
     printf "file '%s'\noption framerate 90000\n" "${p//\'/\'\\\'\'}"
 }
 for i in "${!durations[@]}"; do
@@ -835,6 +887,13 @@ webp_last_delay() {   # webp_last_delay FILE MS
 
 say "Encoding $format..."
 resize="scale=${out_w}:${out_h}:flags=lanczos,setsar=1"
+dither=sierra2_4a enc_from=85
+if (( nearest )); then
+    resize="scale=$((src_w * scale)):$((src_h * scale)):flags=neighbor,setsar=1$pad"
+    # Pixel art keeps its colours: no dithering in GIFs, and lossless WebP (lossy WebP
+    # smears colour across the hard edges). Encoding is all the work, so it gets the whole bar.
+    dither=none enc_from=3 up_start=$SECONDS
+fi
 stats=(-stats); [[ $progress_mode == none ]] || stats=(-nostats)
 in=(-nostdin -v error "${stats[@]}" -progress "$work/progress.txt" -stats_period 0.5 -y -f concat -safe 0 -i "$list")
 # The frames start at 0; when the picture starts later than the audio, skip that much
@@ -853,17 +912,17 @@ crf_vp9=$(qmap 63 0.5625 0 63)     # 80 -> 18
 crf_aom=$(qmap 63 0.5375 0 63)     # 80 -> 20
 q_jpeg=$(qmap 31 0.3 1 31)         # 80 -> 7 (ffmpeg's 1-31 scale, lower is better)
 gif_colors=$(qmap 0 -3.2 2 256)    # 80 and up -> 256
-webp_opts=(-quality "$quality"); (( quality < 100 )) || webp_opts=(-lossless 1 -quality 100)
+webp_opts=(-quality "$quality"); (( quality < 100 && ! nearest )) || webp_opts=(-lossless 1 -quality 100)
 single=(); (( ! still )) || single=(-frames:v 1)   # a still AVIF, not a one-frame animation
 # GIF output only appears at the end (the palette needs every frame first)
 encode() {
-    watch 85 100 "Encoding $format, frame %d of %d" count_encoded eta-started - -- "$@" \
+    watch "$enc_from" 100 "Encoding $format, frame %d of %d" count_encoded eta-started - -- "$@" \
         || die "ffmpeg could not encode $format"
 }
 case $format in
     gif)
         encode ffmpeg "${in[@]}" -fps_mode vfr -filter_complex \
-            "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gif_colors[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128" \
+            "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gif_colors[p];[b][p]paletteuse=dither=$dither:alpha_threshold=128" \
             -loop 0 -final_delay "$final_delay" -f gif "$output" ;;
     mp4)
         # H.264 has no alpha: transparent areas become black
@@ -889,7 +948,7 @@ case $format in
         if (( still )); then
             encode ffmpeg "${in[@]}" -vf "$resize" -c:v libwebp "${webp_opts[@]}" -frames:v 1 -f webp "$output"
         else
-            pix=yuva420p; (( quality < 100 )) || pix=bgra
+            pix=yuva420p; (( quality < 100 && ! nearest )) || pix=bgra
             encode ffmpeg "${in[@]}" -fps_mode vfr -vf "$resize" -pix_fmt "$pix" -c:v libwebp_anim "${webp_opts[@]}" \
                 -loop 0 -f webp "$output"
             webp_last_delay "$output" "$final_delay_ms"

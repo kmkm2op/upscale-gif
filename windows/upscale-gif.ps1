@@ -7,6 +7,7 @@ and save it as gif, mp4, webm or avif.
 Windows version of upscale-gif. Anything not given on the command line is asked for in a
 settings window. Frames are upscaled by the model (2x/3x/4x), then downsampled (Lanczos)
 to the chosen size. Every frame keeps its original timing; audio is kept for mp4/webm.
+The "nearest" model is nearest-neighbour scaling for pixel art (no AI, no GPU needed).
 
 Requirements: Windows PowerShell 5.1 or PowerShell 7, ffmpeg/ffprobe 7+ (8+ for animated
 WebP input) and Upscayl. Both are found automatically; set UPSCAYL_BIN (path to
@@ -41,7 +42,8 @@ Usage: upscale-gif.ps1 [-m model] [-w width | -Height height] [-f format] [-q qu
 Anything not given on the command line is asked for in a settings window. Formats: gif, webp,
 mp4, webm, avif, and for single images png, jpg. -q: 1-100 (default 80; ignored for png).
 Frames are upscaled by the model, then downsampled (Lanczos) to the chosen size; every frame
-keeps its original timing, and audio is kept for mp4/webm output.
+keeps its original timing, and audio is kept for mp4/webm output. -m nearest is nearest-
+neighbour scaling for pixel art: no AI and no GPU, whole multiples (2x, 3x...) of the size.
 '@
 
 $Desc = @{
@@ -75,6 +77,9 @@ $ModelOrder = 'upscayl-standard-4x', 'upscayl-lite-4x', 'digital-art-4x', 'high-
     '4xLSDIRCompactC3', '4xNomos8kSC', '4x_NMKD-Superscale-SP_178000_G', 'remacri-4x',
     'ultrasharp-4x', 'ultramix-balanced-4x', 'uniscale_restore', 'realesrgan-x4plus',
     'RealESRGAN_General_x4_v3', 'realesrgan-x4plus-anime', '4xHFA2k'
+# Not an AI model: plain nearest-neighbour scaling, which keeps pixel art's hard edges
+$Nearest = 'nearest'
+$NearestDesc = 'Pixel art: nearest neighbour, sharp square pixels (no AI, no GPU needed)'
 # Release packages carry upscayl-bin, ffmpeg and ffprobe in bin\ and the models in models\
 $BundleBin = Join-Path $PSScriptRoot 'bin'
 $FmtDesc = @{
@@ -666,12 +671,12 @@ function Get-Gpus {
 # Software Vulkan drivers run on the CPU: they work, but extremely slowly
 function Test-SoftwareGpu([string]$Line) { $Line -match 'llvmpipe|lavapipe|swiftshader' }
 $NoGpuHelp = if ($OnWindows) {
-    "No GPU with a Vulkan driver was found, and upscale-gif needs one.`n" +
+    "No GPU with a Vulkan driver was found, and the AI models need one.`n" +
     "Install or update the driver for your graphics card from AMD, NVIDIA or Intel (the basic " +
     "driver from Windows Update may not include Vulkan). Virtual machines and Remote Desktop " +
     "sessions usually have no Vulkan GPU."
 } else {
-    "No GPU with a Vulkan driver was found, and upscale-gif needs one.`n" +
+    "No GPU with a Vulkan driver was found, and the AI models need one.`n" +
     "Install the Vulkan driver for your graphics card (Mesa for AMD and Intel, NVIDIA's own " +
     "driver for NVIDIA). Virtual machines and remote sessions usually have no Vulkan GPU."
 }
@@ -717,6 +722,7 @@ function Show-Check {
     else { Write-Host 'Upscayl binary: NOT FOUND (install Upscayl or set UPSCAYL_BIN)'; $ok = $false }
     if ($script:Models) { Write-Host "Models folder:  $script:Models"; Write-Host "Models:         $($builtin -join ' ')" }
     else { Write-Host 'Models folder:  NOT FOUND (set UPSCAYL_MODELS)'; $ok = $false }
+    Write-Host "                (also ${Nearest}: nearest neighbour for pixel art, no AI or GPU needed)"
     if ($script:AppModels) { Write-Host "Upscayl app:    $script:AppModels"; Write-Host "                $($app -join ' ')" }
     $src = if ($env:UPSCAYL_CUSTOM_MODELS) { 'UPSCAYL_CUSTOM_MODELS' } else { 'Upscayl settings' }
     if (-not $script:CustomModels) { Write-Host "Custom models:  none (choose a folder in Upscayl's settings, or set UPSCAYL_CUSTOM_MODELS)" }
@@ -800,7 +806,7 @@ function Invoke-Main {
     $settings = Get-UpscaylSettings @('customModelsPath', 'gpuId')
     $script:UpscaylGpu = $settings[1]
     $script:CustomModels = if ($env:UPSCAYL_CUSTOM_MODELS) { $env:UPSCAYL_CUSTOM_MODELS } else { $settings[0] }
-    $script:ModelDir = @{}
+    $script:ModelDir = @{ $Nearest = '-' }
     $script:ModelList = New-Object Collections.Generic.List[string]
     if ($script:Models) { Add-Models $script:Models }
     if ($script:AppModels) { Add-Models $script:AppModels }
@@ -811,10 +817,6 @@ function Invoke-Main {
 
     if (-not $script:FFmpeg) { Fail 'ffmpeg not found. Install it (for example "winget install Gyan.FFmpeg") or put ffmpeg.exe and ffprobe.exe next to this script.' }
     if (-not $script:FFprobe) { Fail "found $script:FFmpeg but no ffprobe next to it" }
-    $bundleError = Get-BundleError
-    if ($bundleError) { Fail $bundleError }
-    if (-not $script:Upscayl) { Fail 'Upscayl not found. Install it from upscayl.org, or set UPSCAYL_BIN to the path of upscayl-bin.exe (run with -c for details).' }
-    if (-not $script:Models) { Fail "found $script:Upscayl but no models folder next to it; set UPSCAYL_MODELS" }
     $gpu = if ($Gpu) { $Gpu.ToLowerInvariant() } else { '' }
     # The output name's extension picks the format when -f isn't given
     $format = if ($Format) { $Format.ToLowerInvariant() -replace '^jpeg$', 'jpg' } else { '' }
@@ -826,16 +828,30 @@ function Invoke-Main {
         }
     }
     if ($gpu -and $gpu -notmatch '^(auto|\d+(,\d+)*)$') { Fail 'GPU must be auto, a number or a list like 0,1 (see -c)' }
-    # Check the GPU before asking for anything, rather than failing after extracting the frames
-    $script:GpuList = @(Get-Gpus)
-    if (-not $script:GpuList) { Fail $NoGpuHelp }
-    foreach ($g in @($gpu -split ',' | Where-Object { $_ -and $_ -ne 'auto' })) {
+    # Check the upscaler and GPU before asking for anything, rather than failing after
+    # extracting the frames. Without them only nearest-neighbour scaling is possible.
+    $upscalerError = ''
+    $script:GpuList = @()
+    if ($Model -ne $Nearest) {
+        $upscalerError = Get-BundleError
+        if (-not $upscalerError -and -not $script:Upscayl) {
+            $upscalerError = 'Upscayl not found. Install it from upscayl.org, or set UPSCAYL_BIN to the path of upscayl-bin.exe (run with -c for details).'
+        }
+        if (-not $upscalerError -and -not $script:Models) { $upscalerError = "found $script:Upscayl but no models folder next to it; set UPSCAYL_MODELS" }
+        if (-not $upscalerError) { $script:GpuList = @(Get-Gpus); if (-not $script:GpuList) { $upscalerError = $NoGpuHelp } }
+    }
+    if ($upscalerError) {
+        if ($Model) { Fail "$upscalerError`n(-m $Nearest, nearest neighbour for pixel art, works without it.)" }
+        # The settings window then offers only nearest neighbour, and says why
+        $script:ModelDir = @{ $Nearest = '-' }; $script:ModelList.Clear()
+    }
+    if ($script:GpuList) { foreach ($g in @($gpu -split ',' | Where-Object { $_ -and $_ -ne 'auto' })) {
         if (-not @($script:GpuList | Where-Object { ($_ -split ' ', 2)[0] -eq $g })) {
             Fail "there is no GPU $g. Available: $($script:GpuList -join '; ')"
         }
-    }
+    } }
     $gpuWarn = ''
-    if (-not @($script:GpuList | Where-Object { -not (Test-SoftwareGpu $_) })) {
+    if ($script:GpuList -and -not @($script:GpuList | Where-Object { -not (Test-SoftwareGpu $_) })) {
         $gpuWarn = "Only a software Vulkan driver was found ($((($script:GpuList[0]) -split ' ', 2)[1])): upscaling runs on the CPU " +
             "and is very slow. Install your graphics card's driver to use the GPU."
     }
@@ -980,9 +996,10 @@ function Invoke-Main {
     # --- Settings window (only for what wasn't given on the command line) ---
     if (-not $model -or -not $format -or (-not $width -and -not $height)) {
         $modelValues = @(); $modelItems = @()
-        foreach ($m in @($last.model) + @($ModelOrder) + @($script:ModelList)) {
+        foreach ($m in @($last.model) + @($ModelOrder) + @($Nearest) + @($script:ModelList)) {
             if (-not $m -or -not $script:ModelDir.Contains($m) -or $modelValues -contains $m) { continue }
-            if ($Desc.Contains($m)) { $item = "$m - $($Desc[$m])" }
+            if ($m -eq $Nearest) { $item = "$m - $NearestDesc" }
+            elseif ($Desc.Contains($m)) { $item = "$m - $($Desc[$m])" }
             else {
                 $item = $m; if (Test-Custom $m) { $item += ' - Custom model' }
                 $s = Get-ModelScale $m; if ($s -ne 4) { $item += $(if (Test-Custom $m) { ', ' } else { ' - ' }) + "$s$x" }
@@ -1009,7 +1026,7 @@ function Invoke-Main {
 
         # Only offer a GPU choice when there is one to make; the default comes first
         $gpuValues = @(); $gpuItems = @()
-        if (-not $gpu) {
+        if (-not $gpu -and -not $upscalerError) {
             $gpuList = $script:GpuList
             if ($gpuList.Count -gt 1) {
                 $first = if ($script:UpscaylGpu) { $script:UpscaylGpu } else { 'auto' }
@@ -1028,10 +1045,12 @@ function Invoke-Main {
         $warn = ''
         if ($count -gt 500) { $warn += "`n$count frames: this will take a while." }
         if ($gpuWarn) { $warn += "`n$gpuWarn" }
+        if ($upscalerError) { $warn += "`nOnly nearest-neighbour scaling is available: $upscalerError" }
         if ($need -gt $free) { $warn += "`nNot enough free space in $workRoot." }
         $customHelp = "Custom width: type a width in pixels, e.g. $(Even ($srcW * 3)), to use instead of Output size. " +
             'Height follows the original aspect ratio, and both are rounded to even numbers. ' +
-            "Up to $($srcW * 4) px (4$x the original) stays sharp with 4$x models; beyond a model's scale it's stretched. Leave empty to use Output size."
+            "Up to $($srcW * 4) px (4$x the original) stays sharp with 4$x models; beyond a model's scale it's stretched. " +
+            "$Nearest uses whole multiples (2$x, 3$x...) of the original, rounding down, with no upper limit. Leave empty to use Output size."
         # Only ask for what the command line didn't settle
         $fields = @(); $keys = @()
         $askSize = -not $width -and -not $height
@@ -1066,10 +1085,15 @@ function Invoke-Main {
     }
 
     # --- Validate and work out the final size ---
-    if (-not $script:ModelDir.Contains($model)) { Fail "unknown model '$model'. Available: $($script:ModelList -join ' ')" }
+    if (-not $script:ModelDir.Contains($model)) { Fail "unknown model '$model'. Available: $($script:ModelList -join ' ') $Nearest" }
+    $nearestMode = $model -eq $Nearest
     if (-not $gpu) { $gpu = if ($script:UpscaylGpu) { $script:UpscaylGpu } else { 'auto' } }
-    $scale = Get-ModelScale $model
-    $maxW = $srcW * $scale; $need = & $spaceFor $scale
+    if ($nearestMode) {
+        $scale = 1; $maxW = 0; $need = & $spaceFor 0; $gpuWarn = ''
+    } else {
+        $scale = Get-ModelScale $model
+        $maxW = $srcW * $scale; $need = & $spaceFor $scale
+    }
     $spaceNote = "Needs ~$(Human $need) of temporary space ($(Human $free) free)"
     if (-not $format) { $format = $defaultFormat }
     if (-not $quality) { $quality = '80' }
@@ -1087,8 +1111,24 @@ function Invoke-Main {
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
     $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
+    $pad = ''
+    if ($nearestMode) {
+        # Whole multiples only, so every source pixel becomes the same size square. MP4 and
+        # WebM need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
+        $scale = if ($width) { [math]::Floor($outW / $srcW) } else { [math]::Floor($outH / $srcH) }
+        $scale = [long][math]::Max($scale, 1)
+        $req = "${outW}x${outH}"
+        $outW = $srcW * $scale; $outH = $srcH * $scale
+        if ($format -match '^(mp4|webm)$' -and ($outW % 2 -or $outH % 2)) {
+            $pad = ",pad=$(Even $outW):$(Even $outH):0:0:black@0"
+            $outW = Even $outW; $outH = Even $outH
+        }
+        if ($req -ne "${outW}x${outH}") {
+            Write-Host "Note: nearest neighbour uses whole multiples of ${srcW}x${srcH}: ${outW}x${outH} (${scale}x) instead of $req."
+        }
+    }
     if ($need -gt $free) { Fail "not enough space in ${workRoot}: $spaceNote" }
-    if ($outW -gt $maxW) { Write-Host "Note: ${outW}px is wider than the model's ${scale}x (${maxW}px); the last step will enlarge." }
+    if (-not $nearestMode -and $outW -gt $maxW) { Write-Host "Note: ${outW}px is wider than the model's ${scale}x (${maxW}px); the last step will enlarge." }
 
     $outFile = $Output
     if (-not $outFile) {
@@ -1110,7 +1150,12 @@ function Invoke-Main {
 
     Write-Host "Input:  $($about -replace " $x ", 'x')"
     $qNote = if ($format -eq 'png') { '' } else { ", quality $q%" }
-    Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), GPU $gpu"
+    if ($nearestMode) {
+        if ($format -eq 'webp') { $qNote = ', lossless' }
+        Write-Host "Output: ${outW}x${outH} $format$qNote, nearest neighbour (${scale}x)"
+    } else {
+        Write-Host "Output: ${outW}x${outH} $format$qNote, model $model (${scale}x), GPU $gpu"
+    }
     if ($gpuWarn) { Write-Host "Note: $gpuWarn" }
 
     # Remove work folders left behind by runs that were killed (e.g. the window was closed)
@@ -1121,6 +1166,8 @@ function Invoke-Main {
     $work = Join-Path $workRoot ('upscale-gif.' + [IO.Path]::GetRandomFileName().Replace('.', ''))
     $frames = Join-Path $work 'frames'; $upscaled = Join-Path $work 'upscaled'
     [void](New-Item -ItemType Directory -Path $frames, $upscaled)
+    # Nearest neighbour scales the original frames while encoding
+    if ($nearestMode) { $upscaled = $frames }
     try {
         if ($Dialogs -and $OnWindows) { Open-ProgressWindow $name }
         # --- Extract (lossless PNG, every frame, transparency kept) ---
@@ -1144,22 +1191,24 @@ function Invoke-Main {
         }
 
         # --- Upscale ---
-        Write-Host "Upscaling $count frames with $model..."
-        $log = Join-Path $work 'upscayl.log'
-        $a = @('-i', $frames, '-o', $upscaled, '-m', $script:ModelDir[$model], '-n', $model, '-z', "$scale", '-s', "$scale")
-        if ($gpu -ne 'auto') { $a += '-g', $gpu }
-        # Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per
-        # CPU thread made upscaling 2-5x faster without using more memory. -j takes one GPU
-        # thread count per GPU.
-        $procs = if ($gpu -eq 'auto') { '2' } else { (@($gpu.Split(',') | ForEach-Object { '2' })) -join ',' }
-        $savers = [math]::Min([math]::Max([Environment]::ProcessorCount, 2), 16)
-        $a += '-j', "2:${procs}:$savers", '-f', 'png'
-        $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
-        $r = Invoke-Tool $script:Upscayl $a -Log $log -Watch (New-Watch 3 85 'Upscaling frame {0} of {1}' $count -Dir $upscaled -Eta 'eta')
-        $tail = { (Get-Content -LiteralPath $log -Tail 20) -join "`n" }
-        if ($r.Code -ne 0) { Write-Host (& $tail); Fail 'Upscayl failed' }
-        $done = @(Get-ChildItem -LiteralPath $upscaled -Filter '*.png').Count
-        if ($done -ne $count) { Write-Host (& $tail); Fail "Upscayl produced $done of $count frames" }
+        if (-not $nearestMode) {
+            Write-Host "Upscaling $count frames with $model..."
+            $log = Join-Path $work 'upscayl.log'
+            $a = @('-i', $frames, '-o', $upscaled, '-m', $script:ModelDir[$model], '-n', $model, '-z', "$scale", '-s', "$scale")
+            if ($gpu -ne 'auto') { $a += '-g', $gpu }
+            # Saving the PNGs is the slow part with Upscayl's default of 2 saving threads; one per
+            # CPU thread made upscaling 2-5x faster without using more memory. -j takes one GPU
+            # thread count per GPU.
+            $procs = if ($gpu -eq 'auto') { '2' } else { (@($gpu.Split(',') | ForEach-Object { '2' })) -join ',' }
+            $savers = [math]::Min([math]::Max([Environment]::ProcessorCount, 2), 16)
+            $a += '-j', "2:${procs}:$savers", '-f', 'png'
+            $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
+            $r = Invoke-Tool $script:Upscayl $a -Log $log -Watch (New-Watch 3 85 'Upscaling frame {0} of {1}' $count -Dir $upscaled -Eta 'eta')
+            $tail = { (Get-Content -LiteralPath $log -Tail 20) -join "`n" }
+            if ($r.Code -ne 0) { Write-Host (& $tail); Fail 'Upscayl failed' }
+            $done = @(Get-ChildItem -LiteralPath $upscaled -Filter '*.png').Count
+            if ($done -ne $count) { Write-Host (& $tail); Fail "Upscayl produced $done of $count frames" }
+        }
 
         # --- Reassemble with each frame's original timing ---
         # The concat demuxer takes its time base from the images (1/25 s by default), which
@@ -1183,6 +1232,13 @@ function Invoke-Main {
 
         Write-Host "Encoding $format..."
         $resize = "scale=${outW}:${outH}:flags=lanczos,setsar=1"
+        $dither = 'sierra2_4a'; $encFrom = 85
+        if ($nearestMode) {
+            $resize = "scale=$($srcW * $scale):$($srcH * $scale):flags=neighbor,setsar=1$pad"
+            # Pixel art keeps its colours: no dithering in GIFs, and lossless WebP (lossy WebP
+            # smears colour across the hard edges). Encoding is all the work, so it gets the whole bar.
+            $dither = 'none'; $encFrom = 3; $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
+        }
         $progressFile = Join-Path $work 'progress.txt'
         $in = @('-nostdin', '-v', 'error', '-nostats', '-progress', $progressFile, '-stats_period', '0.5', '-y', '-f', 'concat', '-safe', '0', '-i', $list)
         # The frames start at 0; when the picture starts later than the audio, skip that
@@ -1198,12 +1254,12 @@ function Invoke-Main {
         $qmap = { param($a, $b, $lo, $hi) [int][math]::Min($hi, [math]::Max($lo, [math]::Floor($a - $q * $b + 0.5))) }
         $crfX264 = & $qmap 51 0.4375 0 51; $crfVp9 = & $qmap 63 0.5625 0 63; $crfAom = & $qmap 63 0.5375 0 63
         $qJpeg = & $qmap 31 0.3 1 31; $gifColors = & $qmap 0 -3.2 2 256
-        $webpOpts = if ($q -lt 100) { @('-quality', "$q") } else { @('-lossless', '1', '-quality', '100') }
+        $webpOpts = if ($q -lt 100 -and -not $nearestMode) { @('-quality', "$q") } else { @('-lossless', '1', '-quality', '100') }
         $single = if ($still) { @('-frames:v', '1') } else { @() }   # a still AVIF, not a one-frame animation
         switch ($format) {
             'gif' {
                 $a = $in + @('-fps_mode', 'vfr', '-filter_complex',
-                    "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gifColors[p];[b][p]paletteuse=dither=sierra2_4a:alpha_threshold=128",
+                    "[0:v]$resize,split[a][b];[a]palettegen=reserve_transparent=1:max_colors=$gifColors[p];[b][p]paletteuse=dither=${dither}:alpha_threshold=128",
                     '-loop', '0', '-final_delay', $finalDelay, '-f', 'gif', $outFile)
             }
             'mp4' {
@@ -1234,13 +1290,13 @@ function Invoke-Main {
                 if ($still) {
                     $a = $in + @('-vf', $resize, '-c:v', 'libwebp') + $webpOpts + @('-frames:v', '1', '-f', 'webp', $outFile)
                 } else {
-                    $pix = if ($q -lt 100) { 'yuva420p' } else { 'bgra' }
+                    $pix = if ($q -lt 100 -and -not $nearestMode) { 'yuva420p' } else { 'bgra' }
                     $a = $in + @('-fps_mode', 'vfr', '-vf', $resize, '-pix_fmt', $pix, '-c:v', 'libwebp_anim') + $webpOpts + @('-loop', '0', '-f', 'webp', $outFile)
                 }
             }
         }
         # GIF output only appears at the end (the palette needs every frame first)
-        $w = New-Watch 85 100 "Encoding $format, frame {0} of {1}" $count -ProgressFile $progressFile -Eta 'eta-started'
+        $w = New-Watch $encFrom 100 "Encoding $format, frame {0} of {1}" $count -ProgressFile $progressFile -Eta 'eta-started'
         if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail "ffmpeg could not encode $format" }
         if ($format -eq 'webp' -and -not $still) {
             Set-WebpLastDelay $outFile ([long][math]::Round($durations[$count - 1] * 1000, [MidpointRounding]::AwayFromZero))

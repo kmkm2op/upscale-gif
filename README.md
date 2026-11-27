@@ -19,7 +19,7 @@ The output keeps every frame's original timing, its transparency and its audio.
    supported).
 2. Extracts every frame as a lossless RGBA PNG.
 3. Upscales all frames with `upscayl-bin` on the GPU (Vulkan), at the model's own scale
-   (4× for the built-in models).
+   (4× for the built-in models). The `nearest` choice for pixel art skips this step.
 4. Downsamples to the size you chose (Lanczos), then reassembles the frames with their
    original durations.
 5. Encodes the result:
@@ -80,7 +80,7 @@ This installs to `~/.local/share/upscale-gif` (no root needed) and adds an appli
 entry, a desktop shortcut, "Open with" for animations and videos, a Dolphin right-click
 action and the `upscale-gif` command.
 
-You need a GPU with a Vulkan driver (see [GPU](#gpu)). On Linux you also need glibc 2.35+ (Ubuntu 22.04,
+You need a GPU with a Vulkan driver (see [GPU](#gpu)) for the AI models. On Linux you also need glibc 2.35+ (Ubuntu 22.04,
 Debian 12, Fedora 36 or newer) and `zenity` for the windows (`kdialog` is used for the file
 picker when available).
 
@@ -120,7 +120,7 @@ upscale-gif -h     # help
 
 | Option      | Meaning |
 |-------------|---------|
-| `-m model`  | Upscayl model name, e.g. `digital-art-4x` (see `-c` for the list) |
+| `-m model`  | Upscayl model name, e.g. `digital-art-4x` (see `-c` for the list), or `nearest` for pixel art |
 | `-w width`  | Output width in pixels; height follows the aspect ratio |
 | `-H height` | Output height in pixels; width follows the aspect ratio |
 | `-f format` | `gif`, `webp`, `mp4`, `webm`, `avif`, and for single images `png`, `jpg`. Can be left out when `-o` ends in one of these |
@@ -146,6 +146,7 @@ Examples:
 upscale-gif                                   # everything from the windows
 upscale-gif -m digital-art-4x -w 1920 -f webm anime.gif
 upscale-gif -m high-fidelity-4x -H 2160 -f mp4 -o out.mp4 clip.mp4
+upscale-gif -m nearest -w 1024 -f webp sprite.gif
 ```
 
 Sizes follow the picture as it's displayed: rotated phone videos come out upright, and
@@ -182,6 +183,19 @@ marks them. Authors and details are in
 [packaging/THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md).
 
 Models in the custom models folder set in the Upscayl app (below) are added to the list.
+
+### Pixel art: `nearest`
+
+AI models smooth and redraw edges, which spoils pixel art. The `nearest` choice instead
+scales with nearest neighbour: every source pixel becomes a sharp square of the same
+colour. It uses no AI and no GPU, so it is fast and also works when no Vulkan GPU is found
+(the model list then offers only `nearest`).
+
+- Sizes are whole multiples of the original (2×, 3×, 4×…), rounding the chosen size down,
+  with no upper limit. A note shows the size used.
+- GIF output gets no dithering, and WebP output is always lossless, so colours stay intact.
+  GIF, WebP and PNG suit pixel art best; MP4, WebM, AVIF and JPEG blur colour slightly.
+- MP4 and WebM need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
 
 ## Finding Upscayl
 

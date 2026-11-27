@@ -13,6 +13,10 @@ its transparency and its audio.
 Everything it needs is included: Upscayl's upscaler, 18 AI models and ffmpeg. Four of the
 models (marked in the list) are for non-commercial use only; see THIRD-PARTY-NOTICES.
 
+For pixel art, choose "nearest" in the model list: it scales by whole multiples (2x, 3x...)
+with sharp square pixels, without AI, and works even without a GPU. GIF, WebP (always
+lossless with nearest) and PNG suit pixel art best.
+
 
 Requirements
 ------------
