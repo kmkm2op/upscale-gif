@@ -272,6 +272,12 @@ when none is found. A run stops with the same explanation before asking for anyt
   window warns above 500 frames or when disk space is low.
 - Zero-delay GIF frames are given 0.1 s, as browsers display them.
 
+## Credits
+
+upscale-gif was written with [GitHub Copilot](https://github.com/features/copilot), an AI
+coding assistant, which wrote and tested most of the code under Someone's direction. Every
+commit lists Copilot as a co-author.
+
 ## License
 
 upscale-gif is [MIT](LICENSE)-licensed. The release packages also contain programs and
