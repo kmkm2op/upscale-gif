@@ -1030,4 +1030,42 @@ esac
 progress_finish
 msg="Saved $(basename "$output") ($(du -h "$output" | cut -f1))"
 echo "$msg"
-if [[ ! -t 1 ]] && gui; then notify-send -a "Upscale GIF" -i image-x-generic "$msg" "$(dirname "$output")" || true; fi
+# The notification's actions open the result. It waits for a click in the background, so the
+# script itself ends right away; the activation token lets Wayland bring the window forward.
+# Percent-encodes a path for a file:// URI (every byte except letters, digits and -._~/)
+file_uri_path() {
+    local LC_ALL=C s=$1 out="" c i
+    for (( i = 0; i < ${#s}; i++ )); do
+        c=${s:i:1}
+        case $c in [a-zA-Z0-9._~/-]) out+=$c ;; *) printf -v c '%%%02X' "'$c"; out+=$c ;; esac
+    done
+    printf '%s' "$out"
+}
+notify_saved() {
+    local file dir
+    file=$(realpath -- "$output") dir=$(dirname -- "$(realpath -- "$output")")
+    if ! notify-send --help 2>/dev/null | grep -q -- '--action'; then
+        notify-send -a "Upscale GIF" -i image-x-generic "$msg" "$dir" || true
+        return
+    fi
+    (
+        exec 3>&- 4>&- </dev/null >/dev/null 2>&1
+        trap - EXIT
+        tokfile=$(mktemp "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/upscale-gif-token.XXXXXX") || exit 0
+        action=$(timeout 1800 notify-send -a "Upscale GIF" -i image-x-generic \
+            -A "default=Show in folder" -A "show=Show in folder" -A "open=Open" \
+            --activation-token-fd=5 "$msg" "$dir" 5>"$tokfile") || true
+        token=$(cat "$tokfile" 2>/dev/null); rm -f "$tokfile"
+        export XDG_ACTIVATION_TOKEN=$token DESKTOP_STARTUP_ID=$token
+        case $action in
+            default | show)
+                # The file manager selects the file; if none offers that, open the folder
+                local_uri="file://$(file_uri_path "$file")"
+                gdbus call --session --dest org.freedesktop.FileManager1 --object-path /org/freedesktop/FileManager1 \
+                    --method org.freedesktop.FileManager1.ShowItems "['$local_uri']" "$token" || xdg-open "$dir" ;;
+            open) xdg-open "$file" ;;
+        esac
+    ) &
+    disown
+}
+if [[ ! -t 1 ]] && gui; then notify_saved; fi

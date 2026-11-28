@@ -151,6 +151,8 @@ The last model, format, quality, downsampler and folder you used are saved in
 
 While it runs, a progress bar shows the current step and the time left: in the terminal, or
 in a window with a Cancel button when started without one (e.g. from a desktop shortcut).
+Started that way, it ends with a notification: click it to show the file in its folder, or
+choose **Open** to view it. (On Windows, a message offers to show it in its folder.)
 
 Examples:
 
