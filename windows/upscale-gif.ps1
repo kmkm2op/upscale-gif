@@ -496,13 +496,11 @@ public class UpscaleGifGridRestore {
     // The second grid
     bool ov; double P2, Q2, gx, gy; int ow, oh;
     int[] ocx, ocy, oxs, oxe, oys, oye, oc0, oc1, or0, or1;
-    // The third grid, and the grid it is drawn on (P4 by Q4, ow4 by oh4 cells, of T4 output pixels
-    // at X4, Y4 with SC a main cell)
-    bool ov3; double P3, Q3, hx, hy, P4, Q4, kx, ky; int ow3, oh3, ow4, oh4, SC, T4, X4, Y4;
-    int[] hc0, hc1, hr0, hr1;
+    // The third grid
+    bool ov3; double P3, Q3, hx, hy; int ow3, oh3;
     System.Collections.Generic.Dictionary<uint, uint> to = new System.Collections.Generic.Dictionary<uint, uint>();
     System.Collections.Generic.Dictionary<uint, long> tot = new System.Collections.Generic.Dictionary<uint, long>();
-    System.Diagnostics.Process dec, enc, enc2, enc3, enc4; System.Threading.Thread thread;
+    System.Diagnostics.Process dec, enc, enc2, enc3; System.Threading.Thread thread;
     public volatile bool Done; public string Error;
     // From Learn: the second grid { size x, size y, offset x, offset y, strength x, strength y } or null
     public double[] Layer;
@@ -537,18 +535,8 @@ public class UpscaleGifGridRestore {
         for (int k = 0; k < ow; k++) { oc0[k] = Fl((gx + k * P2 - fx) / P); oc1[k] = Fl((gx + (k + 1) * P2 - fx) / P - 0.000001); }
         for (int k = 0; k < oh; k++) { or0[k] = Fl((gy + k * Q2 - fy) / Q); or1[k] = Fl((gy + (k + 1) * Q2 - fy) / Q - 0.000001); }
     }
-    public void SetFrame(double P3, double Q3, double hx, double hy, int ow3, int oh3, double P4, double Q4, double kx, double ky, int ow4, int oh4) {
+    public void SetFrame(double P3, double Q3, double hx, double hy, int ow3, int oh3) {
         ov3 = true; this.P3 = P3; this.Q3 = Q3; this.hx = hx; this.hy = hy; this.ow3 = ow3; this.oh3 = oh3;
-        this.P4 = P4; this.Q4 = Q4; this.kx = kx; this.ky = ky; this.ow4 = ow4; this.oh4 = oh4;
-    }
-    // Where the third layer goes at the output size; hc0/hc1 and hr0/hr1: the main cells each of
-    // its cells covers there (with one more cell on each side, so that it covers the whole
-    // picture: index k + 1 for cell k)
-    public void PlaceFrame(int SC, int T4, int X4, int Y4) {
-        this.SC = SC; this.T4 = T4; this.X4 = X4; this.Y4 = Y4;
-        hc0 = new int[ow4 + 2]; hc1 = new int[ow4 + 2]; hr0 = new int[oh4 + 2]; hr1 = new int[oh4 + 2];
-        for (int k = -1; k <= ow4; k++) { hc0[k + 1] = Fl((double)(X4 + k * T4) / SC); hc1[k + 1] = Fl((double)(X4 + (k + 1) * T4 - 1) / SC); }
-        for (int k = -1; k <= oh4; k++) { hr0[k + 1] = Fl((double)(Y4 + k * T4) / SC); hr1[k + 1] = Fl((double)(Y4 + (k + 1) * T4 - 1) / SC); }
     }
 
     static uint Px(byte[] b, int i) { return ((uint)b[i] << 24) | ((uint)b[i + 1] << 16) | ((uint)b[i + 2] << 8) | b[i + 3]; }
@@ -806,11 +794,6 @@ public class UpscaleGifGridRestore {
         SN[key] = best;
         return best;
     }
-    // Are all the pixels of main cell (r, c), snapped, colours in Pal?
-    bool Own(int r, int c) {
-        for (int y = ys[r]; y <= ye[r]; y++) for (int x = xs[c]; x <= xe[c]; x++) if (!Pal.Contains(Snap(px[y * w + x], r, c))) return false;
-        return true;
-    }
     // Removes the pieces of S (cells touching, also corner to corner) smaller than a quarter of
     // the biggest one
     void Pieces(System.Collections.Generic.HashSet<int> S) {
@@ -878,7 +861,9 @@ public class UpscaleGifGridRestore {
     }
 
     // This frame's region where the second grid fits clearly better
-    System.Collections.Generic.HashSet<int> Region() {
+    System.Collections.Generic.HashSet<int> Region() { System.Collections.Generic.Dictionary<int, int> seen; return Region(out seen); }
+    // (seen: how many flat cells each cell was reached across, 0 for the cells found as text)
+    System.Collections.Generic.HashSet<int> Region(out System.Collections.Generic.Dictionary<int, int> seen) {
         long em, eo;
         var bs = BadSet();
         // Seeds: badly explained cells the second grid explains at least twice as well...
@@ -889,7 +874,7 @@ public class UpscaleGifGridRestore {
             Errs(r, c, out em, out eo); if (eo < 0.5 * em) S.Add(key);
         }
         // ...in clusters (text), not alone (blurred sprite edges)
-        var U = new System.Collections.Generic.HashSet<int>(); var seen = new System.Collections.Generic.Dictionary<int, int>();
+        var U = new System.Collections.Generic.HashSet<int>(); seen = new System.Collections.Generic.Dictionary<int, int>();
         var q = new System.Collections.Generic.List<int>();
         foreach (int key in S) if (Near(S, key / 65536, key % 65536) >= 2) { U.Add(key); seen[key] = 0; q.Add(key); }
         // Grow into the cells around them where the second grid is better, and across up to 3
@@ -946,16 +931,16 @@ public class UpscaleGifGridRestore {
     // This frame of the second layer: its cells that overlap the main cells where it fits
     // clearly better (covering those entirely), transparent elsewhere; and of the third (fo)
     // This frame of the second layer: its cells that overlap the main cells where it fits
-    // clearly better (covering those entirely), transparent elsewhere; of the third (fo), and the
-    // main cells the third shows in (mo, a byte each)
-    byte[] LayerFrame(out byte[] fo, out byte[] mo) {
+    // clearly better (covering those entirely), transparent elsewhere; and of the third (fo, at
+    // the source size)
+    byte[] LayerFrame(out byte[] fo) {
         ClearCaches();
         var o = new byte[ow * oh * 4];
-        int fw = ow4 + 2, fh = oh4 + 2;
-        fo = ov3 ? new byte[fw * fh * 4] : null; mo = ov3 ? new byte[bw * bh] : null;
-        var U = Region();
+        fo = ov3 ? new byte[w * h * 4] : null;
+        System.Collections.Generic.Dictionary<int, int> seen;
+        var U = Region(out seen);
         var F = new System.Collections.Generic.HashSet<int>();
-        long em, eo; int n = 0;
+        long em, eo;
         if (ov3 && U.Count > 0) {
             // Around the region, the third grid takes the cells it explains clearly better than
             // both others, and the less clear ones next to those (each pass) unless the main grid
@@ -993,90 +978,64 @@ public class UpscaleGifGridRestore {
                     Errs(r, c, out em, out eo); if (em == 0) { F.Add(key); added++; }
                 }
             } while (added > 0);
-            n = F.Count;
+            // A frame goes around its text: none if it does not reach past the text (the cells
+            // found as such, not the flat ones joined to them) on all sides
+            int r0 = int.MaxValue, r1 = -1, c0 = int.MaxValue, c1 = -1;
+            foreach (int key in U) {
+                int sd; if (F.Contains(key) || (seen.TryGetValue(key, out sd) && sd != 0)) continue;
+                int r = key / 65536, c = key % 65536;
+                r0 = Math.Min(r0, r); r1 = Math.Max(r1, r); c0 = Math.Min(c0, c); c1 = Math.Max(c1, c);
+            }
+            bool tt = false, tb = false, tl = false, tr = false;
+            foreach (int key in F) { int r = key / 65536, c = key % 65536; if (r < r0) tt = true; if (r > r1) tb = true; if (c < c0) tl = true; if (c > c1) tr = true; }
+            if (!(tt && tb && tl && tr)) F.Clear();
             foreach (int key in F) U.Remove(key);
         }
-        // It is drawn on grid P4 by Q4 (the third grid itself, or a third of it), whose cells are
-        // too small for a middle: those take the pixel at their centre, snapped to a real colour.
-        // It also goes over the text cells next to it, which the second layer then leaves to it.
+        // It is the source itself (its pixels in those cells and the text cells next to them),
+        // as drawn: plain nearest neighbour, as no grid fits a frame drawn at another size and
+        // position than everything else. Its blurred pixels are snapped to the real colours of
+        // those cells (SP)...
         var Gs = new System.Collections.Generic.HashSet<int>();
         if (ov3) foreach (int key in U) if (Near(F, key / 65536, key % 65536) > 0) Gs.Add(key);
         foreach (int key in F) Gs.Add(key);
-        // And, within 5 cells of the text, over the cells around it made only of its (real)
-        // colours (such as its shadow), across them, up to flat cells (not inside the text)
-        if (ov3 && n > 0) {
-            var C5 = Around(U, 5); var FL = new System.Collections.Generic.HashSet<int>();
-            var q = new System.Collections.Generic.List<int>(Gs);
-            for (int k = 0; k < q.Count; k++) {
-                if (FL.Contains(q[k])) continue;
-                int r0 = q[k] / 65536, c0 = q[k] % 65536;
-                for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
-                    int r = r0 + j, c = c0 + i;
-                    if (r < 0 || c < 0) continue;
-                    int key = Key(r, c);
-                    if (!C5.Contains(key) || Gs.Contains(key) || U.Contains(key)) continue;
-                    Errs(r, c, out em, out eo);
-                    if (em == 0) { Gs.Add(key); FL.Add(key); q.Add(key); }
-                    else if (Near(U, r, c) < 4 && Own(r, c)) { Gs.Add(key); q.Add(key); }
-                }
-            }
-        }
-        // The colour of each of its cells (TC, only in the real colours of those cells)...
         foreach (int key in Gs) { uint b = B[(key / 65536) * bw + key % 65536]; if (!Pal.Contains(b) && IsSolid(b, key / 65536, key % 65536)) Pal.Add(b); }
-        PO = true;
-        var TC = new System.Collections.Generic.Dictionary<int, uint>();
-        if (ov3 && n > 0) for (int j = -1; j <= oh4; j++) for (int i = -1; i <= ow4; i++) {
-            int hit = -1; long d = 0;
-            for (int r = hr0[j + 1]; r <= hr1[j + 1]; r++) for (int c = hc0[i + 1]; c <= hc1[i + 1]; c++) {
-                if (r < 0 || r >= bh || c < 0 || c >= bw || !Gs.Contains(Key(r, c))) continue;
-                long k = (long)(Math.Min(X4 + (i + 1) * T4, (c + 1) * SC) - Math.Max(X4 + i * T4, c * SC)) * (Math.Min(Y4 + (j + 1) * T4, (r + 1) * SC) - Math.Max(Y4 + j * T4, r * SC));
-                if (k > d) { d = k; hit = r * bw + c; }
+        if (ov3 && F.Count > 0) {
+            PO = true;
+            var SP = new System.Collections.Generic.Dictionary<int, uint>();
+            for (int y = 0; y < h; y++) {
+                if (ry[y] < 0) continue;
+                for (int x = 0; x < w; x++) if (rx[x] >= 0 && Gs.Contains(Key(ry[y], rx[x]))) SP[y * w + x] = Snap(px[y * w + x], ry[y], rx[x]);
             }
-            if (hit < 0) continue;
-            // (a cell whose centre is outside those cells only shows in them: it takes the pixel
-            // nearest its centre in the one it covers most, not what is outside)
-            bool any = true; uint col;
-            if (P4 == P3) col = GCol(0, hx, hy, P3, Q3, i, j, out any);
-            else {
-                int x = Fl(kx + (i + 0.5) * P4), y = Fl(ky + (j + 0.5) * Q4);
-                if (x < 0 || x >= w || y < 0 || y >= h || ry[y] < 0 || rx[x] < 0 || !Gs.Contains(Key(ry[y], rx[x]))) {
-                    int hr = hit / bw, hc = hit % bw;
-                    x = Math.Min(Math.Max(x, xs[hc]), xe[hc]); y = Math.Min(Math.Max(y, ys[hr]), ye[hr]);
+            PO = false;
+            // ...and single pixels (sharing their colour with at most one of the 4 around them, 3
+            // or more of them drawn) take the colour most common around them (the first of
+            // equals, in the order above, left, right, below): its lines are 3 or more pixels
+            // wide, so those are blur
+            var T2 = new System.Collections.Generic.Dictionary<int, uint>();
+            int[] dx = { 0, -1, 1, 0 }, dy = { -1, 0, 0, 1 };
+            foreach (var e in SP) {
+                int x0 = e.Key % w, y0 = e.Key / w, nb = 0, m = 0;
+                var TN = new System.Collections.Generic.Dictionary<uint, int>(); var nc = new uint?[4];
+                for (int k = 0; k < 4; k++) {
+                    int x = x0 + dx[k], y = y0 + dy[k]; uint v;
+                    if (x < 0 || x >= w || y < 0 || y >= h || !SP.TryGetValue(y * w + x, out v)) continue;
+                    nc[k] = v; m++;
+                    if (v == e.Value) nb++; else { int t; TN.TryGetValue(v, out t); TN[v] = t + 1; }
                 }
-                col = Snap(px[y * w + x], ry[y], rx[x]);
+                if (m < 3 || nb > 1) continue;
+                bool found = false; uint best = 0;
+                for (int k = 0; k < 4; k++) {
+                    if (nc[k] == null || nc[k].Value == e.Value) continue;
+                    if (!found || TN[nc[k].Value] > TN[best]) { best = nc[k].Value; found = true; }
+                }
+                T2[e.Key] = best;
             }
-            TC[(j + 1) * fw + i + 1] = any ? col : B[hit];
-        }
-        PO = false;
-        // ...without single cells sticking out (sharing their colour with at most one of the 4
-        // cells around them, 3 or more of them drawn): lines of the frame are 2 or more cells
-        // thick, so those are blur. They get the colour most common around them (the first of
-        // equals, in the order above, left, right, below).
-        var T2 = new System.Collections.Generic.Dictionary<int, uint>();
-        int[] di = { 0, -1, 1, 0 }, dj = { -1, 0, 0, 1 };
-        foreach (var e in TC) {
-            int i0 = e.Key % fw, j0 = e.Key / fw, nb = 0, m = 0;
-            var TN = new System.Collections.Generic.Dictionary<uint, int>(); var nc = new uint?[4];
-            for (int k = 0; k < 4; k++) {
-                int i = i0 + di[k], j = j0 + dj[k]; uint v;
-                if (i < 0 || i >= fw || j < 0 || j >= fh || !TC.TryGetValue(j * fw + i, out v)) continue;
-                nc[k] = v; m++;
-                if (v == e.Value) nb++; else { int t; TN.TryGetValue(v, out t); TN[v] = t + 1; }
+            foreach (var e in T2) SP[e.Key] = e.Value;
+            foreach (var e in SP) {
+                int p = e.Key * 4; uint col = e.Value;
+                fo[p] = (byte)(col >> 24); fo[p + 1] = (byte)(col >> 16); fo[p + 2] = (byte)(col >> 8); fo[p + 3] = (byte)col;
             }
-            if (m < 3 || nb > 1) continue;
-            bool found = false; uint best = 0;
-            for (int k = 0; k < 4; k++) {
-                if (nc[k] == null || nc[k].Value == e.Value) continue;
-                if (!found || TN[nc[k].Value] > TN[best]) { best = nc[k].Value; found = true; }
-            }
-            T2[e.Key] = best;
         }
-        foreach (var e in T2) TC[e.Key] = e.Value;
-        foreach (var e in TC) {
-            int p = e.Key * 4; uint col = e.Value;
-            fo[p] = (byte)(col >> 24); fo[p + 1] = (byte)(col >> 16); fo[p + 2] = (byte)(col >> 8); fo[p + 3] = (byte)col;
-        }
-        if (ov3 && n > 0) foreach (int key in Gs) mo[(key / 65536) * bw + key % 65536] = 255;
         if (U.Count == 0) return o;
         // (not where it would cover any of the third layer)
         for (int j = 0; j < oh; j++) for (int i = 0; i < ow; i++) {
@@ -1094,12 +1053,12 @@ public class UpscaleGifGridRestore {
         return o;
     }
 
-    public byte[] RestoreFrame(byte[] f, out byte[] layer, out byte[] frameLayer, out byte[] mask) {
+    public byte[] RestoreFrame(byte[] f, out byte[] layer, out byte[] frameLayer) {
         Cells(f, 0, true, null);
         var o = new byte[bw * bh * 4];
         for (int i = 0; i < bw * bh; i++) { uint c = B[i]; o[i * 4] = (byte)(c >> 24); o[i * 4 + 1] = (byte)(c >> 16); o[i * 4 + 2] = (byte)(c >> 8); o[i * 4 + 3] = (byte)c; }
-        frameLayer = null; mask = null;
-        layer = ov ? LayerFrame(out frameLayer, out mask) : null;
+        frameLayer = null;
+        layer = ov ? LayerFrame(out frameLayer) : null;
         return o;
     }
 
@@ -1119,34 +1078,33 @@ public class UpscaleGifGridRestore {
     }
     // Restores every frame from one ffmpeg (decodeArgs, RGBA out) into another (encodeArgs),
     // the second layer, if any, into a third (layerArgs), and the third layer into a fourth
-    // (frameArgs) with its mask into a fifth (maskArgs)
-    public void Start(string ffmpeg, string decodeArgs, string encodeArgs, string layerArgs, string frameArgs, string maskArgs) {
+    // (frameArgs)
+    public void Start(string ffmpeg, string decodeArgs, string encodeArgs, string layerArgs, string frameArgs) {
         thread = new System.Threading.Thread(delegate() {
             try {
                 dec = Spawn(ffmpeg, decodeArgs, false, true); enc = Spawn(ffmpeg, encodeArgs, true, false);
                 if (ov) enc2 = Spawn(ffmpeg, layerArgs, true, false);
-                if (ov3) { enc3 = Spawn(ffmpeg, frameArgs, true, false); enc4 = Spawn(ffmpeg, maskArgs, true, false); }
+                if (ov3) enc3 = Spawn(ffmpeg, frameArgs, true, false);
                 var f = new byte[w * h * 4];
                 var src = dec.StandardOutput.BaseStream; var dst = enc.StandardInput.BaseStream;
                 var dst2 = ov ? enc2.StandardInput.BaseStream : null;
                 var dst3 = ov3 ? enc3.StandardInput.BaseStream : null;
-                var dst4 = ov3 ? enc4.StandardInput.BaseStream : null;
                 while (ReadFull(src, f)) {
-                    byte[] l, fl, mk; var o = RestoreFrame(f, out l, out fl, out mk);
+                    byte[] l, fl; var o = RestoreFrame(f, out l, out fl);
                     dst.Write(o, 0, o.Length);
                     if (ov) dst2.Write(l, 0, l.Length);
-                    if (ov3) { dst3.Write(fl, 0, fl.Length); dst4.Write(mk, 0, mk.Length); }
+                    if (ov3) dst3.Write(fl, 0, fl.Length);
                 }
-                dst.Close(); if (ov) dst2.Close(); if (ov3) { dst3.Close(); dst4.Close(); }
-                dec.WaitForExit(); enc.WaitForExit(); if (ov) enc2.WaitForExit(); if (ov3) { enc3.WaitForExit(); enc4.WaitForExit(); }
-                if (dec.ExitCode != 0 || enc.ExitCode != 0 || (ov && enc2.ExitCode != 0) || (ov3 && (enc3.ExitCode != 0 || enc4.ExitCode != 0))) throw new Exception("ffmpeg failed");
+                dst.Close(); if (ov) dst2.Close(); if (ov3) dst3.Close();
+                dec.WaitForExit(); enc.WaitForExit(); if (ov) enc2.WaitForExit(); if (ov3) enc3.WaitForExit();
+                if (dec.ExitCode != 0 || enc.ExitCode != 0 || (ov && enc2.ExitCode != 0) || (ov3 && enc3.ExitCode != 0)) throw new Exception("ffmpeg failed");
             } catch (Exception e) { Error = e.Message; }
             Done = true;
         });
         thread.IsBackground = true; thread.Start();
     }
     public void Cancel() {
-        foreach (var p in new[] { dec, enc, enc2, enc3, enc4 }) { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
+        foreach (var p in new[] { dec, enc, enc2, enc3 }) { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
     }
 }
 '@
@@ -1888,7 +1846,7 @@ function Invoke-Main {
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
     $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
-    $pad = ''; $grid = $null; $layer = $null; $frameGrid = $null; $frameB = 1; $baseW = $srcW; $baseH = $srcH
+    $pad = ''; $grid = $null; $layer = $null; $frameGrid = $null; $baseW = $srcW; $baseH = $srcH
     if ($nearestMode -and -not $sarFixed) {
         # Pixel art that was already enlarged is first brought back to its own pixels: each grid
         # cell becomes one pixel, of the colour most common in the cell's middle
@@ -1910,7 +1868,7 @@ function Invoke-Main {
                 if ($r.Code -eq 0 -and (Test-Path -LiteralPath $raw)) { $sample = [IO.File]::ReadAllBytes($raw); $restorer.Learn($sample) }
             } finally { Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue }
             $enlarged = '{0:0.##}' -f $grid[0]
-            $layer = $null; $layerA = 0; $layerB = 1; $frameGrid = $null; $frameA = 0; $frameB = 1
+            $layer = $null; $layerA = 0; $layerB = 1; $frameGrid = $null
             # Rounded like the Linux version's
             $inv = [Globalization.CultureInfo]::InvariantCulture
             $f3 = { param($v) @($v | ForEach-Object { [double]::Parse(([double]$_).ToString('F3', $inv), $inv) }) }
@@ -1941,34 +1899,20 @@ function Invoke-Main {
                 # second grid is A/B of the main one (B up to 8, within 1%): e.g. 3.01/3.49 = 6/7,
                 # so at 14x the main pixels are 14 px and the second layer's 12 px
                 $layerA, $layerB = & $fraction $layer[0] $layer[1]
-                # Around that part, a third grid (a speech bubble's frame drawn at another size or
-                # position than its text), kept only if it gets whole pixels too. One 1.5 times the
-                # second grid is drawn on a grid a third its size (half the second grid's pixels), so
-                # that lines of 1 and 1.5 of the second grid's pixels both come out exactly.
+                # Around that part, a third grid that fits clearly better marks a frame (a speech
+                # bubble's, drawn at another size or position than its text). No grid of whole
+                # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour),
+                # only without its blur.
                 if ($layerA -and $sample) {
                     $restorer.LearnFrame($sample)
                     if ($restorer.Frame) {
-                        $g3 = & $f3 $restorer.Frame
-                        $ow3 = [long][math]::Floor(($srcW - $g3[2]) / $g3[0] + 0.2); $oh3 = [long][math]::Floor(($srcH - $g3[3]) / $g3[1] + 0.2)
-                        $g4 = $g3
-                        $r = ($g3[0] + $g3[1]) / ($layer[0] + $layer[1])
-                        if ($r -ge 1.5 * 0.97 -and $r -le 1.5 * 1.03) {
-                            $f6 = { param($v) [double]::Parse(([double]$v).ToString('F6', $inv), $inv) }
-                            $p4 = & $f6 ($g3[0] / 3); $q4 = & $f6 ($g3[1] / 3); $x4 = $g3[2]; $y4 = $g3[3]
-                            while ($x4 -ge 0.8 * $p4) { $x4 -= $p4 }; while ($x4 -lt -0.2 * $p4) { $x4 += $p4 }
-                            while ($y4 -ge 0.8 * $q4) { $y4 -= $q4 }; while ($y4 -lt -0.2 * $q4) { $y4 += $q4 }
-                            $g4 = @($p4, $q4, (& $f6 $x4), (& $f6 $y4))
-                        }
-                        $ow4 = [long][math]::Floor(($srcW - $g4[2]) / $g4[0] + 0.2); $oh4 = [long][math]::Floor(($srcH - $g4[3]) / $g4[1] + 0.2)
-                        $frameA, $frameB = & $fraction $g4[0] $g4[1]
-                        if ($frameA) {
-                            $frameGrid = $g3
-                            $restorer.SetFrame($g3[0], $g3[1], $g3[2], $g3[3], [int]$ow3, [int]$oh3, $g4[0], $g4[1], $g4[2], $g4[3], [int]$ow4, [int]$oh4)
-                        }
+                        $frameGrid = & $f3 $restorer.Frame
+                        $ow3 = [long][math]::Floor(($srcW - $frameGrid[2]) / $frameGrid[0] + 0.2); $oh3 = [long][math]::Floor(($srcH - $frameGrid[3]) / $frameGrid[1] + 0.2)
+                        $restorer.SetFrame($frameGrid[0], $frameGrid[1], $frameGrid[2], $frameGrid[3], [int]$ow3, [int]$oh3)
                     }
                 }
-                $its = if ($frameGrid) { " and its frame at $('{0:0.##}' -f $frameGrid[0])x; restoring the original pixels of all three" } else { '; restoring the original pixels of both' }
-                Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x, with a part such as text at $('{0:0.##}' -f $layer[0])x${its}."
+                $its = if ($frameGrid) { ' (its frame kept as drawn, without the blur)' } else { '' }
+                Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x, with a part such as text at $('{0:0.##}' -f $layer[0])x; restoring the original pixels of both${its}."
             } else {
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x; restoring its original ${baseW}x${baseH} pixels."
             }
@@ -1981,7 +1925,6 @@ function Invoke-Main {
         $scale = [long][math]::Max($scale, 1)
         $step = if ($layer -and $layerA) { $layerB } else { 1 }
         # (with a third grid, a multiple of both)
-        $k = $step; while ($k % $frameB) { $k += $step }; $step = $k
         $scale = [long][math]::Max([math]::Floor($scale / $step) * $step, $step)
         $req = "${outW}x${outH}"
         $outW = $baseW * $scale; $outH = $baseH * $scale
@@ -2071,8 +2014,8 @@ function Invoke-Main {
                 $layerArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "${ow}x${oh}", '-i', '-',
                     '-start_number', '1', (Join-Path $layerDir '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '
             }
-            $frameDir = Join-Path $work 'frame'; $maskDir = Join-Path $work 'mask'
-            $frameArgs = $null; $maskArgs = $null
+            $frameDir = Join-Path $work 'frame'
+            $frameArgs = $null
             # "width, height, x, y" of a layer at the output size
             $rnd = { param($v) [long][math]::Round($v, [MidpointRounding]::AwayFromZero) }
             $place = { param($g, $n, $m, $la, $lb)
@@ -2082,19 +2025,16 @@ function Invoke-Main {
                     (& $rnd (($g[3] + $m * $g[1] / 2 - $grid[3]) * $scale / $grid[1] - $ph / 2)))
             }
             if ($frameGrid) {
-                [void](New-Item -ItemType Directory -Path $frameDir); [void](New-Item -ItemType Directory -Path $maskDir)
-                $fw, $fh, $fx3, $fy3 = & $place $g4 $ow4 $oh4 $frameA $frameB
-                $t4 = [long]($scale * $frameA / $frameB)
-                $restorer.PlaceFrame([int]$scale, [int]$t4, [int]$fx3, [int]$fy3)
-                $frameArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "$($ow4 + 2)x$($oh4 + 2)", '-i', '-',
+                [void](New-Item -ItemType Directory -Path $frameDir)
+                # (the source at the output's pixels per source pixel)
+                $fw, $fh, $fx3, $fy3 = & $place @(1, 1, 0, 0) $srcW $srcH 0 1
+                $frameArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "${srcW}x${srcH}", '-i', '-',
                     '-start_number', '1', (Join-Path $frameDir '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '
-                $maskArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', "${baseW}x${baseH}", '-i', '-',
-                    '-start_number', '1', (Join-Path $maskDir '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '
             }
             $job.Start($script:FFmpeg,
                 ((@('-nostdin', '-v', 'error', '-i', $framesIn, '-f', 'rawvideo', '-pix_fmt', 'rgba', '-') | ForEach-Object { Format-Arg $_ }) -join ' '),
                 ((@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "${baseW}x${baseH}", '-i', '-',
-                    '-start_number', '1', (Join-Path $restored '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '), $layerArgs, $frameArgs, $maskArgs)
+                    '-start_number', '1', (Join-Path $restored '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '), $layerArgs, $frameArgs)
             $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
             $w = New-Watch 3 $(if ($layer) { 42 } else { 50 }) 'Restoring pixels, frame {0} of {1}' $count -Dir $restored -Eta 'eta'
             $next = [DateTime]::MinValue
@@ -2116,13 +2056,11 @@ function Invoke-Main {
                 $lw, $lh, $lx, $ly = & $place $layer $ow $oh $layerA $layerB
                 $combined = Join-Path $work 'combined'
                 [void](New-Item -ItemType Directory -Path $combined)
-                # A third layer goes between the two (it has a cell more on each side; drawn over
-                # the first layer, then only kept in its main cells, by the mask)
+                # A third layer goes between the two
                 $in = @('-framerate', '25', '-i', (Join-Path $restored '%06d.png')); $mid = ''; $top = '[a]'
                 if ($frameGrid) {
-                    $in += @('-framerate', '25', '-i', (Join-Path $frameDir '%06d.png'), '-framerate', '25', '-i', (Join-Path $maskDir '%06d.png'))
-                    $mid = "[a]split[a1][a2];[1:v]scale=$($fw + 2 * $t4):$($fh + 2 * $t4):flags=neighbor[f];[a1][f]overlay=x=$($fx3 - $t4):y=$($fy3 - $t4):format=rgb[x];"
-                    $mid += "[2:v]scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor[k];[x][k]alphamerge[g];[a2][g]overlay=format=rgb[m];"; $top = '[m]'
+                    $in += @('-framerate', '25', '-i', (Join-Path $frameDir '%06d.png'))
+                    $mid = "[1:v]scale=${fw}:${fh}:flags=neighbor[f];[a][f]overlay=x=${fx3}:y=${fy3}:format=rgb[m];"; $top = '[m]'
                 }
                 $in += @('-framerate', '25', '-i', (Join-Path $layerDir '%06d.png'))
                 $a = @('-nostdin', '-v', 'error') + $in + @(
