@@ -244,12 +244,16 @@ around that part (such as the inside of a speech bubble) joins it. A bubble's fr
 drawn at yet another size or position than its text (in the example, 1.5× the text's
 pixels): around the second layer, upscale-gif also tries grids 1, 1.5 and 2 times the
 text's size, moved by any number of half pixels, and if one explains the area clearly
-better (at least 10% fewer stray colours), the frame is restored on that grid as a third
-layer, between the other two, with the same shape as in the source. Each layer keeps
-whole, equal pixels: the output scale is a multiple that gives every layer whole pixel
-sizes (for text at 6/7 of the sprites' size and a frame at 9/7, a multiple of 7×, so at 14×
-the sprite pixels are 14 px, the text pixels 12 px and the frame pixels 18 px). The layers'
-pixels differ in size, as in the source. A note shows when this happens, e.g. "pixel art
+better (at least 10% fewer stray colours), the frame becomes a third layer, between the
+other two. A frame 1.5× the text's pixels can mix lines 1 and 1.5 text pixels thick, so it
+is drawn on a grid of half text pixels, where both come out exactly; each of its cells takes
+the source's colour at its centre, with blurred colours snapped to the nearest real ones and
+lone stray cells removed. The frame layer also covers its shadow and the flat area around it,
+so it meets the other layers where they show the same colour and no seam can be seen. Each
+layer keeps whole, equal pixels: the output scale is a multiple that gives every layer whole
+pixel sizes (for text at 6/7 of the sprites' size, a multiple of 7×, so at 14× the sprite
+pixels are 14 px, the text pixels 12 px and the frame's lines 12 or 18 px, on a 6 px grid).
+The layers' pixels differ in size, as in the source. A note shows when this happens, e.g. "pixel art
 that was enlarged 3.49×, with a part such as text at 3.01× and its frame at 4.51×", or
 otherwise "restoring its original 88×88 pixels".
 Photos, video and art at its original size are left as they are.
