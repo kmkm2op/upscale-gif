@@ -429,6 +429,62 @@ function Find-Models([string]$Exe) {
 # The Upscayl app keeps its settings in Chromium localStorage, a LevelDB database whose
 # table files are snappy-compressed. Read() returns the newest value of each requested key
 # across the write-ahead log and table files ("" if unset). C# 5, for Windows PowerShell.
+# Finds the pixel grid of pixel art that was already enlarged by 2.2x or more, possibly by
+# an uneven factor such as 3.5x (pixels then alternate between 3 and 4 wide, with blurred
+# edges). The colour change between neighbouring columns and rows peaks on the grid lines,
+# so the grid is the strongest repeating pattern in those changes (a Fourier scan).
+$PixelGridCode = @'
+using System;
+public static class UpscaleGifPixelGrid {
+    // rgb: frames of w x h RGB24. Returns { sizeX, sizeY, offsetX, offsetY } or null.
+    public static double[] Detect(byte[] rgb, int w, int h) {
+        int frame = w * h * 3, frames = rgb.Length / frame;
+        if (frames == 0 || w < 8 || h < 8) return null;
+        double[] ex = new double[w], ey = new double[h];
+        for (int f = 0; f < frames; f++) {
+            int b = f * frame;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int i = b + (y * w + x) * 3;
+                    if (x > 0) ex[x] += Math.Abs(rgb[i] - rgb[i - 3]) + Math.Abs(rgb[i + 1] - rgb[i - 2]) + Math.Abs(rgb[i + 2] - rgb[i - 1]);
+                    if (y > 0) { int j = i - w * 3; ey[y] += Math.Abs(rgb[i] - rgb[j]) + Math.Abs(rgb[i + 1] - rgb[j + 1]) + Math.Abs(rgb[i + 2] - rgb[j + 2]); }
+                }
+            }
+        }
+        double[] gx = Grid(ex), gy = Grid(ey);
+        if (gx == null || gy == null || gx[1] < 0.3 || gy[1] < 0.3 || Math.Abs(gx[0] - gy[0]) > 0.05 * gx[0]) return null;
+        return new double[] { gx[0], gy[0], gx[2], gy[2] };
+    }
+    // { size, strength, offset } of the strongest grid of 2.2 to 16 px in an edge profile
+    static double[] Grid(double[] e) {
+        int n = e.Length; double tot = 0;
+        for (int i = 1; i < n; i++) tot += e[i];
+        if (tot == 0) return null;
+        double[] s = new double[1601]; double best = 0; int bp = 0;
+        for (int p = 220; p <= 1600; p++) {
+            s[p] = Strength(e, p / 100.0, 0, tot)[0];
+            if (s[p] > best) { best = s[p]; bp = p; }
+        }
+        // A grid of size P also shows at P/2, P/3: prefer a multiple that is nearly as strong
+        for (int k = 2; k * bp <= 1600; k++) if (s[k * bp] >= 0.9 * best) { bp = k * bp; best = s[bp]; }
+        // Refine to 0.001 px (0.01 adds up to a pixel across the picture), measuring the offset
+        // from the middle, where an error in the size matters least
+        int c = n / 2; double fine = 0, fp = 0, fph = 0;
+        for (int p = bp * 10 - 10; p <= bp * 10 + 10; p++) {
+            double[] r = Strength(e, p / 1000.0, c, tot);
+            if (r[0] > fine) { fine = r[0]; fp = p / 1000.0; fph = r[1] + c; }
+        }
+        double off = fph - Math.Floor(fph / fp) * fp;
+        return new double[] { fp, fine, off };
+    }
+    static double[] Strength(double[] e, double P, int c, double tot) {
+        double re = 0, im = 0;
+        for (int i = 1; i < e.Length; i++) { double a = 2 * Math.PI * (i - c) / P; re += e[i] * Math.Cos(a); im += e[i] * Math.Sin(a); }
+        return new double[] { Math.Sqrt(re * re + im * im) / tot, Math.Atan2(im, re) / (2 * Math.PI) * P };
+    }
+}
+'@
+
 $LevelDbReader = @'
 using System;
 using System.Collections.Generic;
@@ -774,25 +830,49 @@ function Show-Check {
 }
 
 # ffmpeg doesn't pass the last frame's length to libwebp, which then uses the average frame
-# length. The delay is a 24-bit millisecond field in the last ANMF chunk, 20 bytes after the
-# chunk's start, so it is set here directly.
-function Set-WebpLastDelay([string]$File, [long]$Ms) {
+# length. The delay is a 24-bit millisecond field in each ANMF chunk, 20 bytes after the
+# chunk's start, so the last one is set here directly: to the total length minus the frames
+# before it, because libwebp merges identical frames and the last one may stand for several.
+function Set-WebpLastDelay([string]$File, [long]$TotalMs) {
     $fs = New-Object IO.FileStream($File, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
     try {
-        $h = New-Object byte[] 8
-        $off = 12L; $last = -1L
+        $h = New-Object byte[] 8; $d = New-Object byte[] 3
+        $off = 12L; $last = -1L; $before = 0L; $prev = 0L
         while ($off + 8 -le $fs.Length) {
             [void]$fs.Seek($off, 'Begin')
             if ($fs.Read($h, 0, 8) -lt 8) { break }
             $len = [long][BitConverter]::ToUInt32($h, 4)
-            if ([Text.Encoding]::ASCII.GetString($h, 0, 4) -eq 'ANMF') { $last = $off }
+            if ([Text.Encoding]::ASCII.GetString($h, 0, 4) -eq 'ANMF') {
+                [void]$fs.Seek($off + 20, 'Begin'); [void]$fs.Read($d, 0, 3)
+                $before += $prev; $prev = [long]$d[0] + ([long]$d[1] -shl 8) + ([long]$d[2] -shl 16); $last = $off
+            }
             $off += 8 + $len + ($len -band 1)
         }
         if ($last -lt 0) { return }
-        $Ms = [math]::Min($Ms, 16777215)
+        $Ms = [math]::Min([math]::Max($TotalMs - $before, 1), 16777215)
         [void]$fs.Seek($last + 20, 'Begin')
         $fs.Write([byte[]]@(($Ms -band 255), (($Ms -shr 8) -band 255), (($Ms -shr 16) -band 255)), 0, 3)
     } finally { $fs.Dispose() }
+}
+
+# Pixel grid of enlarged pixel art (see $PixelGridCode): @(sizeX, sizeY, offsetX, offsetY) or
+# $null. Looks at up to 6 frames and the middle 480x480 pixels.
+function Get-PixelGrid([string]$File, [int]$Stream, [long]$W, [long]$H, [string]$TempDir) {
+    $cw = [math]::Min($W, 480); $ch = [math]::Min($H, 480)
+    $cx = [math]::Floor(($W - $cw) / 2); $cy = [math]::Floor(($H - $ch) / 2)
+    $raw = Join-Path $TempDir ('upscale-gif-grid.' + [IO.Path]::GetRandomFileName() + '.rgb')
+    try {
+        $r = Invoke-Tool $script:FFmpeg @('-nostdin', '-v', 'error', '-i', $File, '-map', "0:$Stream", '-frames:v', '6',
+            '-vf', "crop=${cw}:${ch}:${cx}:${cy}", '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-y', $raw) -Capture
+        if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $raw)) { return $null }
+        if (-not ('UpscaleGifPixelGrid' -as [type])) { Add-Type -TypeDefinition $PixelGridCode -Language CSharp }
+        $g = [UpscaleGifPixelGrid]::Detect([IO.File]::ReadAllBytes($raw), [int]$cw, [int]$ch)
+        if (-not $g) { return $null }
+        # Offsets relative to the whole picture
+        $fx = ($g[2] + $cx) % $g[0]; $fy = ($g[3] + $cy) % $g[1]
+        return , @($g[0], $g[1], $fx, $fy)
+    } catch { return $null }
+    finally { Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue }
 }
 
 # --- Main --------------------------------------------------------------------------------
@@ -930,8 +1010,10 @@ function Invoke-Main {
     # the GIF header's aspect field) and phone videos stored sideways with a rotation flag,
     # which ffmpeg turns upright when decoding.
     $formatName = ((Invoke-Tool $script:FFprobe @('-v', 'error', '-show_entries', 'format=format_name', '-of', 'csv=p=0', $inputFile) -Capture).Out).Trim()
+    $sarFixed = $false
     if ([string]$info['sample_aspect_ratio'] -match '^(\d+):(\d+)$' -and [long]$Matches[1] -gt 0 -and [long]$Matches[2] -gt 0 -and $formatName -ne 'gif') {
         $srcW = [long][math]::Round($srcW * [long]$Matches[1] / [long]$Matches[2], [MidpointRounding]::AwayFromZero)
+        $sarFixed = $Matches[1] -ne $Matches[2]
     }
     $rotation = ToNum ([string]$info['rotation'])
     # Photos keep their orientation (EXIF) on the frame instead of the stream
@@ -1134,20 +1216,39 @@ function Invoke-Main {
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
     $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
-    $pad = ''
+    $pad = ''; $restore = ''; $baseW = $srcW; $baseH = $srcH
+    if ($nearestMode -and -not $sarFixed) {
+        # Pixel art that was already enlarged is first brought back to its own pixel grid: each
+        # grid cell becomes one pixel, taken from the cell's middle, away from blurred edges.
+        # Sampling at the grid's exact (often fractional) positions is done on a 2x copy.
+        $grid = Get-PixelGrid $inputFile $vidx $srcW $srcH $workRoot
+        if ($grid) {
+            $px = $grid[0]; $py = $grid[1]
+            $baseW = [long][math]::Floor(($srcW - $grid[2]) / $px); $baseH = [long][math]::Floor(($srcH - $grid[3]) / $py)
+            $r2 = { param($v) [long][math]::Floor(2 * $v + 0.5) }
+            $restore = "scale=iw*2:ih*2:flags=neighbor,crop=$(& $r2 ($baseW * $px)):$(& $r2 ($baseH * $py)):$(& $r2 $grid[2]):$(& $r2 $grid[3]),scale=${baseW}:${baseH}:flags=neighbor,"
+            $note = "Note: this looks like pixel art that was enlarged $('{0:0.##}' -f $px)x; restoring its original ${baseW}x${baseH} pixels"
+            if ([math]::Abs($px - [math]::Round($px)) -gt 0.05) {
+                # An uneven enlargement blends neighbouring colours: merge them back into a palette
+                $restore += 'split[pxa][pxb];[pxa]palettegen=max_colors=64:stats_mode=full[pxp];[pxb][pxp]paletteuse=dither=none:alpha_threshold=128,format=rgba,'
+                $note += ' and cleaning up blended colours'
+            }
+            Write-Host "$note."
+        }
+    }
     if ($nearestMode) {
         # Whole multiples only, so every source pixel becomes the same size square. MP4 and
         # WebM need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
-        $scale = if ($width) { [math]::Floor($outW / $srcW) } else { [math]::Floor($outH / $srcH) }
+        $scale = if ($width) { [math]::Floor($outW / $baseW) } else { [math]::Floor($outH / $baseH) }
         $scale = [long][math]::Max($scale, 1)
         $req = "${outW}x${outH}"
-        $outW = $srcW * $scale; $outH = $srcH * $scale
+        $outW = $baseW * $scale; $outH = $baseH * $scale
         if ($format -match '^(mp4|webm)$' -and ($outW % 2 -or $outH % 2)) {
             $pad = ",pad=$(Even $outW):$(Even $outH):0:0:black@0"
             $outW = Even $outW; $outH = Even $outH
         }
         if ($req -ne "${outW}x${outH}") {
-            Write-Host "Note: nearest neighbour uses whole multiples of ${srcW}x${srcH}: ${outW}x${outH} (${scale}x) instead of $req."
+            Write-Host "Note: nearest neighbour uses whole multiples of ${baseW}x${baseH}: ${outW}x${outH} (${scale}x) instead of $req."
         }
     }
     if ($need -gt $free) { Fail "not enough space in ${workRoot}: $spaceNote" }
@@ -1258,7 +1359,7 @@ function Invoke-Main {
         $resize = "scale=${outW}:${outH}:flags=$downsampler,setsar=1"
         $dither = 'sierra2_4a'; $encFrom = 85
         if ($nearestMode) {
-            $resize = "scale=$($srcW * $scale):$($srcH * $scale):flags=neighbor,setsar=1$pad"
+            $resize = "${restore}scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor,setsar=1$pad"
             # Pixel art keeps its colours: no dithering in GIFs, and lossless WebP (lossy WebP
             # smears colour across the hard edges). Encoding is all the work, so it gets the whole bar.
             $dither = 'none'; $encFrom = 3; $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
@@ -1323,7 +1424,7 @@ function Invoke-Main {
         $w = New-Watch $encFrom 100 "Encoding $format, frame {0} of {1}" $count -ProgressFile $progressFile -Eta 'eta-started'
         if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail "ffmpeg could not encode $format" }
         if ($format -eq 'webp' -and -not $still) {
-            Set-WebpLastDelay $outFile ([long][math]::Round($durations[$count - 1] * 1000, [MidpointRounding]::AwayFromZero))
+            Set-WebpLastDelay $outFile ([long][math]::Round(($durations | Measure-Object -Sum).Sum * 1000, [MidpointRounding]::AwayFromZero))
         }
     } finally {
         Close-Progress

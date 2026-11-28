@@ -226,6 +226,16 @@ colour. It uses no AI and no GPU, so it is fast and also works when no Vulkan GP
   GIF, WebP and PNG suit pixel art best; MP4, WebM, AVIF and JPEG blur colour slightly.
 - MP4 and WebM need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
 
+**Pixel art that was already enlarged** (screen recordings, GIFs from the web) is detected
+and repaired first. Enlarging by an uneven factor such as 3.5× makes pixels alternate
+between 3 and 4 wide and blurs their edges into extra colours, and plain nearest neighbour
+would keep those flaws. upscale-gif finds the original pixel grid (any size from 2.2 to 16
+screen pixels), takes one pixel from the middle of each grid cell, and for uneven factors
+merges the blended colours back into a palette of up to 64. It then scales that restored
+picture by a whole number, so every pixel comes out the same size. A note shows when this
+happens, e.g. "pixel art that was enlarged 3.49×; restoring its original 88×88 pixels".
+Photos, video and art at its original size are left as they are.
+
 ## Finding Upscayl
 
 The script looks for Upscayl's command-line upscaler (`upscayl-bin`) in this order:
