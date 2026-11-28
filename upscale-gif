@@ -441,57 +441,114 @@ pixel_grid() {
             if (fx >= 0.8 * X["p"]) fx -= X["p"]; if (fy >= 0.8 * Y["p"]) fy -= Y["p"]
             printf "%.3f %.3f %.3f %.3f\n", X["p"], Y["p"], fx, fy }' || true
 }
-# Restoring enlarged pixel art: which grid cell each column and row belongs to (-1 near a
-# cell's edge, where the enlargement blurred the colours), and colour helpers
+# Restoring enlarged pixel art. Each grid cell becomes one pixel: the colour most common in
+# the cell's middle (away from its edges, where the enlargement blurred the colours), with
+# nearly identical colours counted as one. Some pixel art also has finer detail, such as text
+# drawn at twice the resolution of the sprites: then every cell is also split in 2 x 2, and a
+# cell whose four parts differ strongly keeps them as four pixels.
+# cx/cy: cell of each column/row, -1 near a cell edge; rx/ry: cell of each column/row
+# including its edges, -1 outside the grid; hx[k]: the column at the middle of half-size
+# column k; hy[y]: the half-size row whose middle is row y, else -1.
 GRID_AWK='
     function cells(   x, y, t, k, f) {
-        for (x = 0; x < w; x++) { t = (x + 0.5 - fx) / P; k = int(t); f = t - k; cx[x] = (t >= 0 && k < bw && f > 0.2 && f < 0.8) ? k : -1 }
-        for (y = 0; y < h; y++) { t = (y + 0.5 - fy) / Q; k = int(t); f = t - k; cy[y] = (t >= 0 && k < bh && f > 0.2 && f < 0.8) ? k : -1 } }
+        for (x = 0; x < w; x++) { t = (x + 0.5 - fx) / P; k = int(t); f = t - k
+            rx[x] = (t >= 0 && k < bw) ? k : -1; cx[x] = (rx[x] >= 0 && f > 0.2 && f < 0.8) ? k : -1 }
+        for (y = 0; y < h; y++) { t = (y + 0.5 - fy) / Q; k = int(t); f = t - k
+            ry[y] = (t >= 0 && k < bh) ? k : -1; cy[y] = (ry[y] >= 0 && f > 0.2 && f < 0.8) ? k : -1; hy[y] = -1 }
+        for (k = 0; k < 2 * bw; k++) { x = int(fx + (k + 0.5) * P / 2); hx[k] = x < 0 ? 0 : (x >= w ? w - 1 : x) }
+        for (k = 0; k < 2 * bh; k++) { y = int(fy + (k + 0.5) * Q / 2); if (y >= 0 && y < h) hy[y] = k }
+        row = -1 }
     function hex(s,   i, v) { v = 0; for (i = 1; i <= length(s); i++) v = v * 16 + index("0123456789abcdef", substr(s, i, 1)) - 1; return v }
-    function dist(a, b,   s, i, x, y) { s = 0
-        for (i = 1; i <= 5; i += 2) { x = hex(substr(a, i, 2)); y = hex(substr(b, i, 2)); s += x > y ? x - y : y - x }
-        return s }'
-# grid_colours W H P Q FX FY BW BH < od rows: "FROM TO COUNT" for every colour seen in the cells'
-# middles; nearly identical colours (RGB differences adding up to 18 or less, same
-# transparency) map to the most common of them
-grid_colours() {
-    awk -v w="$1" -v h="$2" -v P="$3" -v Q="$4" -v fx="$5" -v fy="$6" -v bw="$7" -v bh="$8" "$GRID_AWK"'
+    function dist(a, b,   s, i, x, y) {
+        if ((a, b) in dc) return dc[a, b]
+        s = 0; for (i = 1; i <= 5; i += 2) { x = hex(substr(a, i, 2)); y = hex(substr(b, i, 2)); s += x > y ? x - y : y - x }
+        return dc[a, b] = s }
+    # best[k]: the most common colour for each k in cnt[k, colour]; ties go to the colour
+    # more common overall (tot), then to the lowest
+    function choose(cnt, best,   key, a, c, bn) {
+        for (key in cnt) { split(key, a, SUBSEP); c = cnt[key]
+            if (c > bn[a[1]] || (c == bn[a[1]] && (tot[a[2]] > tot[best[a[1]]] || (tot[a[2]] == tot[best[a[1]]] && a[2] < best[a[1]])))) { bn[a[1]] = c; best[a[1]] = a[2] } } }
+    # One row of cells is complete. Learn mode counts the cells with strong finer detail (half
+    # cells differing by 300 or more); fine mode keeps that detail where at least 2 of the 8
+    # neighbouring cells have it too (text), not in isolated cells (blurred sprite edges), so
+    # a row is printed once the next one is known.
+    function flush(   k, a, i, j, v, sp, q) {
+        if (row < 0) return
+        split("", best); choose(cnt, best)
+        for (k = 0; k < bw; k++) {
+            sp = 0
+            if (learn || fine) {
+                # The four half cells (one whose middle is outside the picture takes the colour
+                # of the whole cell)
+                for (i = 0; i < 4; i++) { a = (i < 2 ? 0 : 2 * bw) + 2 * k + i % 2; q[i] = (a in sbest) ? sbest[a] : best[k] }
+                if (q[0] != q[1] || q[0] != q[2] || q[0] != q[3])
+                    for (i = 0; i < 4; i++) for (j = i + 1; j < 4; j++) { v = dist(q[i], q[j]); if (v > sp) sp = v }
+            }
+            if (learn) { cellsn++; if (sp >= 300) detail++; continue }
+            if (!fine) continue
+            nd[k] = sp >= 300
+            for (i = 0; i < 4; i++) ns[i, k] = q[i]
+        }
+        if (!learn && !fine) { o = ""; for (k = 0; k < bw; k++) o = o best[k]; print toupper(o) }
+        if (fine) { emit(); for (k = 0; k < bw; k++) { pd[k] = cd[k]; cd[k] = nd[k]; cb[k] = best[k]; for (i = 0; i < 4; i++) cs[i, k] = ns[i, k] }; pending = 1 }
+        split("", cnt); split("", sbest); row = -1 }
+    # Prints the pending row (cb, cs, cd) as two rows of half-size pixels, using the rows of
+    # detail flags above (pd) and below (nd)
+    function emit(   k, i, m, o0, o1, col) {
+        if (!pending) return
+        o0 = o1 = ""
+        for (k = 0; k < bw; k++) {
+            m = 0; if (cd[k]) for (i = -1; i <= 1; i++) m += pd[k + i] + nd[k + i] + (i ? cd[k + i] : 0)
+            for (i = 0; i < 4; i++) { col = (cd[k] && m >= 2) ? cs[i, k] : cb[k]; if (i < 2) o0 = o0 col; else o1 = o1 col } }
+        print toupper(o0); print toupper(o1); pending = 0 }
+    # End of a frame: print its last row (nothing below it)
+    function endframe(   k) { flush(); if (fine) { split("", nd); emit(); split("", pd); split("", cd) } }
+    function pixels(y, map,   x, c, r, k, so) {
+        if (y == 0 && NR > 1) endframe()
+        r = ry[y]; if (r != row) flush(); if (r < 0) return
+        row = r
+        if (cy[y] >= 0) for (x = 0; x < w; x++) if (cx[x] >= 0) {
+            c = $(4*x+1) $(4*x+2) $(4*x+3) $(4*x+4); if (map && (c in to)) c = to[c]
+            cnt[cx[x], c]++; if (learn) n[c]++ }
+        # Half cells: the pixel at the middle (their middles are only 1 or 2 pixels wide)
+        if ((learn || fine) && hy[y] >= 0 && hy[y] - 2 * r >= 0 && hy[y] - 2 * r <= 1) {
+            so = (hy[y] - 2 * r) * 2 * bw
+            for (k = 0; k < 2 * bw; k++) { x = hx[k]; c = $(4*x+1) $(4*x+2) $(4*x+3) $(4*x+4); if (map && (c in to)) c = to[c]; sbest[so + k] = c } } }'
+# grid_learn W H P Q FX FY BW BH < od rows of some frames: first "DETAIL cells_with_detail
+# cells", then "FROM TO COUNT" for every colour; nearly identical colours (RGB differences
+# adding up to 18 or less, same transparency) map to the most common of them
+grid_learn() {
+    awk -v w="$1" -v h="$2" -v P="$3" -v Q="$4" -v fx="$5" -v fy="$6" -v bw="$7" -v bh="$8" -v learn=1 "$GRID_AWK"'
         BEGIN { cells() }
-        { y = (NR - 1) % h; if (cy[y] < 0) next
-          for (x = 0; x < w; x++) if (cx[x] >= 0) n[$(4*x+1) $(4*x+2) $(4*x+3) $(4*x+4)]++ }
-        END { for (c in n) print n[c], c }' | sort -k1,1nr -k2,2 | awk "$GRID_AWK"'
-        { c = $2; best = ""; bd = 19
-          for (i = 1; i <= k; i++) if (substr(kept[i], 7, 2) == substr(c, 7, 2)) { v = dist(c, kept[i]); if (v < bd) { bd = v; best = kept[i] } }
-          if (best == "") { kept[++k] = c; best = c }
-          print c, best, $1 }'
+        { pixels((NR - 1) % h, 0) }
+        END { endframe(); print "DETAIL", detail + 0, cellsn + 0; for (c in n) print n[c], c }' | {
+        read -r line; echo "$line"
+        sort -k1,1nr -k2,2 | awk "$GRID_AWK"'
+            { c = $2; into = ""; bd = 19
+              for (i = 1; i <= k; i++) if (substr(kept[i], 7, 2) == substr(c, 7, 2)) { v = dist(c, kept[i]); if (v < bd) { bd = v; into = kept[i] } }
+              if (into == "") { kept[++k] = c; into = c }
+              print c, into, $1 }'
+    }
 }
-# grid_restore MAP W H P Q FX FY BW BH < od rows: hex frames of BW x BH, each pixel the most
-# common (merged) colour in the middle of its cell; ties go to the colour more common overall
+# grid_restore MAP FINE W H P Q FX FY BW BH < od rows: the restored frames, in hex
 grid_restore() {
-    awk -v w="$2" -v h="$3" -v P="$4" -v Q="$5" -v fx="$6" -v fy="$7" -v bw="$8" -v bh="$9" "$GRID_AWK"'
-        BEGIN { cells(); row = -1 }
+    awk -v fine="$2" -v w="$3" -v h="$4" -v P="$5" -v Q="$6" -v fx="$7" -v fy="$8" -v bw="$9" -v bh="${10}" "$GRID_AWK"'
+        BEGIN { cells() }
         NR == FNR { to[$1] = $2; tot[$2] += $3; next }
-        function flush(   key, a, c, k, out) {
-            if (row < 0) return
-            for (key in cnt) { split(key, a, SUBSEP); c = cnt[key]
-                if (c > bn[a[1]] || (c == bn[a[1]] && (tot[a[2]] > tot[best[a[1]]] || (tot[a[2]] == tot[best[a[1]]] && a[2] < best[a[1]])))) { bn[a[1]] = c; best[a[1]] = a[2] } }
-            out = ""; for (k = 0; k < bw; k++) out = out best[k]
-            print toupper(out); split("", cnt); split("", bn); split("", best); row = -1 }
-        { y = (FNR - 1) % h; r = cy[y]
-          if (r != row) flush()
-          if (r < 0) next
-          row = r
-          for (x = 0; x < w; x++) if (cx[x] >= 0) { c = $(4*x+1) $(4*x+2) $(4*x+3) $(4*x+4); cnt[cx[x], (c in to) ? to[c] : c]++ } }
-        END { flush() }' "$1" -
+        { pixels((FNR - 1) % h, 1) }
+        END { endframe() }' "$1" -
+}
+# The input's frames as RGBA hex rows (od), every STEP-th frame, at most MAX of them
+frames_hex() {   # frames_hex STEP MAX
+    local f=("-map" "0:$vidx" -vf "select=not(mod(n\,$1))" -pix_fmt rgba)
+    [[ -z $aidx ]] || f=(-filter_complex "[0:$vidx][0:$aidx]alphamerge,format=rgba,select=not(mod(n\,$1))")
+    ffmpeg -nostdin -v error -i "$input" "${f[@]}" -fps_mode passthrough -frames:v "$2" -f rawvideo -pix_fmt rgba - \
+        | od -An -tx1 -v -w$((src_w * 4))
 }
 # restore_frames: turns the extracted frames into the art's original pixels ($work/upscaled)
 restore_frames() {
-    local n=$(( 2000000 / (src_w * src_h) )) a=("${grid_args[@]}")
-    (( n >= 1 )) || n=1; (( n <= 60 )) || n=60
-    ffmpeg -nostdin -v error -i "$work/frames/%06d.png" -frames:v "$n" -f rawvideo -pix_fmt rgba - \
-        | od -An -tx1 -v -w$((src_w * 4)) | grid_colours "${a[@]}" >"$work/colours.txt"
     ffmpeg -nostdin -v error -i "$work/frames/%06d.png" -f rawvideo -pix_fmt rgba - \
-        | od -An -tx1 -v -w$((src_w * 4)) | grid_restore "$work/colours.txt" "${a[@]}" | basenc --base16 -d \
+        | od -An -tx1 -v -w$((src_w * 4)) | grid_restore "$work/colours.txt" "$grid_fine" "${grid_args[@]}" | basenc --base16 -d \
         | ffmpeg -nostdin -v error -f rawvideo -pix_fmt rgba -s "${base_w}x$base_h" -i - -start_number 1 "$work/upscaled/%06d.png"
 }
 # Bytes the temporary frames may take in RAM ($RAMROOT, a tmpfs): half of the memory that is
@@ -850,7 +907,20 @@ if (( nearest && ! sar_fixed )) && have basenc; then
         read -r base_w base_h < <(awk -v P="$gx" -v Q="$gy" -v fx="$fx" -v fy="$fy" -v w="$src_w" -v h="$src_h" \
             'BEGIN { print int((w - fx) / P + 0.2), int((h - fy) / Q + 0.2) }')   # a last cell 80% inside counts
         grid_args=("$src_w" "$src_h" "$gx" "$gy" "$fx" "$fy" "$base_w" "$base_h")
-        echo "Note: this looks like pixel art that was enlarged $(awk -v v="$gx" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring its original ${base_w}×${base_h} pixels."
+        # Learn the colours from frames spread over the whole animation (up to 2 million
+        # pixels), and whether it has finer detail: half-size cells that differ strongly in
+        # at least 0.2% of the cells (with cells of 3 px or more, so the halves can be seen)
+        n=$(( 2000000 / (src_w * src_h) )); (( n >= 1 )) || n=1; (( n <= 60 )) || n=60
+        grid_map=$(frames_hex $(( (count + n - 1) / n )) "$n" | grid_learn "${grid_args[@]}") || true
+        read -r _ detail cells <<<"${grid_map%%$'\n'*}"
+        grid_map=${grid_map#*$'\n'} grid_fine=0
+        enlarged=$(awk -v v="$gx" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')
+        if awk -v P="$gx" -v d="${detail:-0}" -v c="${cells:-0}" 'BEGIN { exit !(P >= 3 && c > 0 && d / c >= 0.002) }'; then
+            grid_fine=1 base_w=$((base_w * 2)) base_h=$((base_h * 2))
+            echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with some finer detail (such as text); restoring its original ${base_w}×${base_h} pixels."
+        else
+            echo "Note: this looks like pixel art that was enlarged ${enlarged}×; restoring its original ${base_w}×${base_h} pixels."
+        fi
     fi
 fi
 if (( nearest )); then
@@ -1015,6 +1085,7 @@ fi
 # --- Restore enlarged pixel art --------------------------------------------------------
 if (( ${#grid_args[@]} )); then
     say "Restoring the original pixels..."
+    printf '%s\n' "$grid_map" >"$work/colours.txt"
     up_start=$SECONDS
     watch 3 50 "Restoring pixels, frame %d of %d" count_upscaled eta "$work/restore.log" -- restore_frames \
         || { tail -5 "$work/restore.log" >&2; die "could not restore the pixel art's original pixels$(ram_hint)"; }

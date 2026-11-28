@@ -234,7 +234,13 @@ screen pixels) and turns each grid cell back into one pixel: the colour most com
 cell's middle, away from its blurred edges. Nearly identical shades (a total RGB difference
 of 18 or less, typical of compression noise) count as one colour, so noise can't outvote
 the real colour; the result only uses colours from the original. It then scales that
-restored picture by a whole number, so every pixel comes out the same size. A note shows when this
+restored picture by a whole number, so every pixel comes out the same size.
+
+Some pixel art mixes resolutions, e.g. text drawn at twice the resolution of the sprites.
+When enough cells (0.2%) contain strong detail at half the grid size, the picture is
+restored at that finer resolution instead: ordinary cells still become one colour (as
+2×2 pixels), while cells with strong detail whose neighbours have it too, such as text,
+keep their four half-size pixels. A note shows when this
 happens, e.g. "pixel art that was enlarged 3.49×; restoring its original 88×88 pixels".
 Photos, video and art at its original size are left as they are.
 

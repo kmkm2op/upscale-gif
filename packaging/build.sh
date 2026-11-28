@@ -132,7 +132,7 @@ build_ffmpeg() {
     log "[$t] ffmpeg"
     unpack "$DL/ffmpeg-9.1.tar.xz" "$s/ffmpeg"
     local filters=buffer,buffersink,abuffer,abuffersink,format,aformat,null,anull,copy,scale,setsar,split,palettegen
-    filters+=,paletteuse,alphamerge,alphaextract,premultiply,aresample,atrim,trim,setpts,asetpts,color,overlay,crop,pad
+    filters+=,paletteuse,alphamerge,alphaextract,premultiply,aresample,atrim,trim,setpts,asetpts,color,overlay,crop,pad,select
     (cd "$s/ffmpeg" && ./configure --prefix="$p" "${ff[@]}" --pkg-config=pkg-config --pkg-config-flags=--static \
         --extra-cflags="-I$p/include" --extra-ldflags="-L$p/lib" --extra-libs="-lpthread -lm" \
         --enable-gpl --enable-static --disable-shared --disable-autodetect --disable-debug --disable-doc \
