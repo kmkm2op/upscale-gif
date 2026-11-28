@@ -240,14 +240,12 @@ Some animations add a part on a grid of its own, such as a speech bubble whose t
 enlarged 3× while the sprites were enlarged 3.5×. upscale-gif finds the cells the main
 grid explains badly, measures the grid their edges line up on, and restores that part on
 its own grid as a second layer, drawn over the first at the output size. The flat area
-around that part (such as the inside of a speech bubble) joins it. A bubble's frame is often
-drawn at yet another size or position than its text (in the example, 1.5× the text's
-pixels): around the second layer, upscale-gif also tries grids 1, 1.5 and 2 times the
-text's size, moved by any number of half pixels, and if one explains the area clearly
-better (at least 10% fewer stray colours) and goes around the text, the frame is kept as
-drawn in the source (plain nearest neighbour): no grid of whole pixels fits a frame drawn at
-such a different size and position, and its lines can be of two widths, so it looks just
-like the input. The text and the sprites keep whole, equal pixels: the output scale
+around that part (such as the inside of a speech bubble) joins it. A speech bubble's outline
+is often drawn at yet another size and position, which no grid of whole pixels fits, so it
+is kept exactly as drawn (plain nearest neighbour of the input): upscale-gif finds the
+bubble's inside (the background colour of the text, closed all round), takes the colour
+around it as the outline, and draws the input's own pixels there, the same in every frame.
+The text and the sprites keep whole, equal pixels: the output scale
 is a multiple that gives both whole pixel sizes (for text at 6/7 of the sprites' size, a
 multiple of 7×, so at 14× the sprite pixels are 14 px and the text pixels 12 px).
 A note shows when this happens, e.g. "pixel art

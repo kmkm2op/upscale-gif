@@ -452,10 +452,8 @@ pixel_grid() {
 # nearly identical colours counted as one. Some animations also have a layer on a grid of its
 # own, such as text added at another size: its cells are found where the main grid explains
 # the colours badly, its grid is measured from them, and where it fits clearly better it is
-# restored on that grid as a second layer (drawn over the first when encoding). Around it, a
-# third grid that fits clearly better marks a frame (such as a speech bubble's, drawn at yet
-# another size or position), kept as drawn in the source (plain nearest neighbour), between
-# the two.
+# restored on that grid as a second layer (drawn over the first when encoding). A speech
+# bubble around it is kept exactly as drawn in the source (plain nearest neighbour), on top.
 GRID_AWK='
     function fl(v) { return v < 0 && v != int(v) ? int(v) - 1 : int(v) }
     # Which cell each column and row is in: rx/ry for every pixel, cx/cy only in a cell
@@ -480,7 +478,7 @@ GRID_AWK='
             for (k = 0; k < oh; k++) { or0[k] = fl((gy + k * Q2 - fy) / Q); or1[k] = fl((gy + (k + 1) * Q2 - fy) / Q - 0.000001) }
             for (k = 0; k < ow; k++) clear = clear "00000000"
         }
-        if (ov3) for (k = 0; k < w; k++) clear3 = clear3 "00000000"
+        if (ov) for (k = 0; k < w; k++) clear3 = clear3 "00000000"
         row = -1 }
     function hex(s,   i, v) { v = 0; for (i = 1; i <= length(s); i++) v = v * 16 + index("0123456789abcdef", substr(s, i, 1)) - 1; return v }
     function dist(a, b,   s, i, x, y) {
@@ -504,7 +502,7 @@ GRID_AWK='
             for (key in cnt) { split(key, a, SUBSEP); n[a[1]] += cnt[key]; if (dist(a[2], best[a[1]]) > 60) e[a[1]] += cnt[key] }
             for (k = 0; k < bw; k++) { B[row, k] = best[k]; if (n[k] && e[k] / n[k] >= 0.25) bad[row, k] = 1 }
         }
-        if (!learn && !flearn) { o = ""; for (k = 0; k < bw; k++) o = o best[k]; print toupper(o) }
+        if (!learn && !ov) { o = ""; for (k = 0; k < bw; k++) o = o best[k]; print toupper(o) }
         split("", cnt); row = -1 }
     function pixels(y, map,   x, c, r) {
         if (y == 0) endframe()
@@ -522,7 +520,7 @@ GRID_AWK='
         for (x = 0; x < w; x++) { c = a[4*x+1] a[4*x+2] a[4*x+3] a[4*x+4]; if (ov && (c in to)) c = to[c]; RP[y, x] = c } }
     # How many of the 8 cells around cell (r, c) are in S
     function near(S, r, c,   i, j, m) { m = 0; for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++) if ((i || j) && ((r + j, c + i) in S)) m++; return m }
-    function endframe(   key, a, r, c, y, x, keep) {
+    function endframe(   key, a, r, c, y, x, keep, o) {
         flush(); if (!framed) return
         if (learn) {
             # Edges inside the badly explained cells, if they come in clusters
@@ -534,7 +532,9 @@ GRID_AWK='
                         if (y > 0) ey[y] += dist(RP[y, x], RP[y - 1, x]) } } }
             frames++
         }
-        if (ov) { layer(); split("", O); split("", EMc); split("", EOc); split("", GC); split("", SD); split("", SOLID) }
+        # (with a second grid, the frame is printed once its layers are done: they can change it)
+        if (ov) { layer(); split("", O); split("", EMc); split("", EOc)
+            for (r = 0; r < bh; r++) { o = ""; for (c = 0; c < bw; c++) o = o B[r, c]; print toupper(o) } }
         split("", L); split("", RP); split("", done); split("", B); split("", bad); framed = 0 }
     # The second grid cell (i, j): the most common colour in its middle ("" if it has none)
     function ocell(i, j,   y, x, cc) {
@@ -552,78 +552,69 @@ GRID_AWK='
                 oc0 = (i >= 0 && i < ow && j >= 0 && j < oh) ? ocell(i, j) : ""; if (oc0 == "") oc0 = B[r, c]
                 EO += dist(col, oc0) } }
         EMc[r, c] = EM; EOc[r, c] = EO }
-    # Cell (i, j) of grid id, with its origin at X0, Y0 and cells pp by qq: the most common
-    # colour in its middle ("" if it has none)
-    function gcol(id, X0, Y0, pp, qq, i, j,   x, y, x0, x1, y0, y1, t, cc) {
-        if ((id, i, j) in GC) return GC[id, i, j]
-        x0 = fl(X0 + i * pp); x1 = fl(X0 + (i + 1) * pp); if (x0 < 0) x0 = 0; if (x1 >= w) x1 = w - 1
-        y0 = fl(Y0 + j * qq); y1 = fl(Y0 + (j + 1) * qq); if (y0 < 0) y0 = 0; if (y1 >= h) y1 = h - 1
-        for (y = y0; y <= y1; y++) { t = (y + 0.5 - Y0) / qq - j; if (t <= 0.2 || t >= 0.8) continue
-            rowpx(y); for (x = x0; x <= x1; x++) { t = (x + 0.5 - X0) / pp - i; if (t > 0.2 && t < 0.8) cc[RP[y, x]]++ } }
-        return GC[id, i, j] = pick(cc) }
-    # How far all the pixels of main cell (r, c) are from the cells of grid id (n by m of them)
-    # over them
-    function ferr(id, X0, Y0, pp, qq, n, m, r, c,   y, x, i, j, col, e) {
-        e = 0
-        for (y = ys[r]; y <= ye[r]; y++) { rowpx(y); j = fl((y + 0.5 - Y0) / qq)
-            for (x = xs[c]; x <= xe[c]; x++) { i = fl((x + 0.5 - X0) / pp)
-                col = (i >= 0 && i < n && j >= 0 && j < m) ? gcol(id, X0, Y0, pp, qq, i, j) : ""
-                e += dist(RP[y, x], col == "" ? B[r, c] : col) } }
-        return e }
-    # The main cells within d (2 if not given) of the region U, in C
-    function around(U, C, d,   key, a, i, j, r, c) {
-        if (!d) d = 2
+    # A speech bubble around the text (region U), kept exactly as drawn: plain nearest
+    # neighbour, as its outline is often drawn at another size and position than the text and
+    # everything else. Its inside is the area of the colour most common in the text cells (its
+    # background) that the text cells touch, with the text in it; it must be closed (not reach
+    # the edge of the picture). Its outline is the colour most common within 3 pixels around
+    # it, up to 6 pixels away, with whatever that encloses. Sets RG: the outline and the
+    # pixels next to it (which are the source as drawn), IN: the inside, and changes the main
+    # cells under RG to the colour most common in them away from it. Returns 0 if there is none.
+    function bubble(U,   key, a, r, c, y, x, cnt, bg, q, nq, k, i, j, I, x0, x1, y0, y1, OUT, D, ol, ADJ, d, CL) {
+        split("", RG); split("", IN)
         for (key in U) { split(key, a, SUBSEP)
-            for (i = -d; i <= d; i++) for (j = -d; j <= d; j++) { r = a[1] + j; c = a[2] + i
-                if (r >= 0 && r < bh && c >= 0 && c < bw) C[r, c] = 1 } } }
-    # Learning a third grid: the cells of the second grid 1, 1.5 or 2 times as big, moved by any
-    # number of half pixels. Each is tried around the region of up to 3 frames, adding up for
-    # each cell how badly the best of the three grids explains it (FT), and of the first two
-    # (FB). Speech bubbles can have their frame drawn at another size and position than
-    # their text.
-    function fsearch(U,   C, key, a, nb, LC, LM, g, kk, k, pp, qq, dx, dy, X0, Y0, n, m, t, e) {
-        around(U, C); nb = 0
-        for (key in C) { split(key, a, SUBSEP); errs(a[1], a[2]); e = EM < EO ? EM : EO
-            if (e > 0) { LC[++nb] = key; LM[nb] = e; FB += e } }
-        if (!nb) return
-        fdone++; g = 0
-        for (kk = 0; kk < 3; kk++) { k = 1 + kk * 0.5; pp = k * P2; qq = k * Q2
-            for (dx = 0; dx * 0.5 < pp; dx++) for (dy = 0; dy * 0.5 < qq; dy++) { g++
-                X0 = gx + dx * 0.5; while (X0 >= 0.8 * pp) X0 -= pp
-                Y0 = gy + dy * 0.5; while (Y0 >= 0.8 * qq) Y0 -= qq
-                n = int((w - X0) / pp + 0.2); m = int((h - Y0) / qq + 0.2)
-                GP[g] = pp; GQ[g] = qq; GX[g] = X0; GY[g] = Y0
-                for (t = 1; t <= nb; t++) { split(LC[t], a, SUBSEP)
-                    e = ferr(g, X0, Y0, pp, qq, n, m, a[1], a[2]); FT[g] += e < LM[t] ? e : LM[t] } } }
-        ng = g }
-    # Notes in SOLID[r, c, colour] the colours of main cell (r, c) that fill a 2 by 2 square of
-    # pixels starting in it: real colours do, the blur between two colours is thinner
-    function solid(r, c,   y, x, a) {
-        if ((r, c) in SD) return
-        SD[r, c] = 1
-        for (y = ys[r]; y <= ye[r] && y + 1 < h; y++) { rowpx(y); rowpx(y + 1)
-            for (x = xs[c]; x <= xe[c] && x + 1 < w; x++) { a = RP[y, x]
-                if (RP[y, x + 1] == a && RP[y + 1, x] == a && RP[y + 1, x + 1] == a) SOLID[r, c, a] = 1 } } }
-    function issolid(col, r, c,   i, j) {
-        for (j = -2; j <= 2; j++) for (i = -2; i <= 2; i++) if (r + j >= 0 && r + j < bh && c + i >= 0 && c + i < bw) {
-            solid(r + j, c + i); if ((r + j, c + i, col) in SOLID) return 1 }
-        return 0 }
-    # Removes the pieces of S (cells touching, also corner to corner) smaller than a quarter
-    # of the biggest one
-    function pieces(S,   key, a, q, nq, k, i, j, r, c, id, size, np, big) {
-        for (key in S) { if (key in id) continue
-            id[key] = ++np; q[nq = 1] = key
-            for (k = 1; k <= nq; k++) { split(q[k], a, SUBSEP)
-                for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++) { r = a[1] + j; c = a[2] + i
-                    if (((r, c) in S) && !((r, c) in id)) { id[r, c] = np; q[++nq] = r SUBSEP c } } }
-            size[np] = nq; if (nq > big) big = nq }
-        for (key in id) if (size[id[key]] < big / 4) delete S[key] }
+            for (y = ys[a[1]]; y <= ye[a[1]]; y++) { rowpx(y); for (x = xs[a[2]]; x <= xe[a[2]]; x++) cnt[RP[y, x]]++ } }
+        bg = pick(cnt); nq = 0
+        for (key in U) { split(key, a, SUBSEP)
+            for (y = ys[a[1]]; y <= ye[a[1]]; y++) for (x = xs[a[2]]; x <= xe[a[2]]; x++) if (RP[y, x] == bg && !((y, x) in I)) { I[y, x] = 1; q[++nq] = y SUBSEP x } }
+        if (!nq) return 0
+        x0 = w; x1 = -1; y0 = h; y1 = -1
+        for (k = 1; k <= nq; k++) { split(q[k], a, SUBSEP); y = a[1] + 0; x = a[2] + 0
+            if (x == 0 || y == 0 || x == w - 1 || y == h - 1) return 0
+            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+            for (d = 0; d < 4; d++) { i = x + (d == 0) - (d == 1); j = y + (d == 2) - (d == 3)
+                if ((j, i) in I) continue; rowpx(j); if (RP[j, i] == bg) { I[j, i] = 1; q[++nq] = j SUBSEP i } } }
+        # The inside, with its holes (the text): all but what the outside reaches
+        fill(I, x0 - 1, x1 + 1, y0 - 1, y1 + 1, OUT)
+        for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) if (!((y, x) in OUT)) IN[y, x] = 1
+        # How far (8 ways) the pixels around it are, up to 6
+        nq = 0; for (key in IN) q[++nq] = key
+        for (k = 1; k <= nq; k++) { split(q[k], a, SUBSEP); y = a[1] + 0; x = a[2] + 0; d = ((y, x) in D) ? D[y, x] : 0
+            if (d >= 6) continue
+            for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++) {
+                if (y + j < 0 || y + j >= h || x + i < 0 || x + i >= w || ((y + j, x + i) in IN) || ((y + j, x + i) in D)) continue
+                D[y + j, x + i] = d + 1; q[++nq] = (y + j) SUBSEP (x + i) } }
+        split("", cnt); for (key in D) if (D[key] <= 3) { split(key, a, SUBSEP); rowpx(a[1]); cnt[RP[key]]++ }
+        ol = pick(cnt); split("", I)
+        for (key in IN) I[key] = 1
+        for (key in D) if (RP[key] == ol) I[key] = 1
+        # The outline and what it encloses, and the pixels next to them
+        split("", OUT); fill(I, x0 - 8, x1 + 8, y0 - 8, y1 + 8, OUT)
+        for (y = y0 - 7; y <= y1 + 7; y++) for (x = x0 - 7; x <= x1 + 7; x++)
+            if (y >= 0 && y < h && x >= 0 && x < w && !((y, x) in OUT) && !((y, x) in IN))
+                for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++)
+                    if (y + j >= 0 && y + j < h && x + i >= 0 && x + i < w && !((y + j, x + i) in IN)) RG[y + j, x + i] = 1
+        # The main cells under it, from their pixels not next to it
+        for (key in RG) { split(key, a, SUBSEP); r = ry[a[1]]; c = rx[a[2]]; if (r >= 0 && c >= 0) CL[r, c] = 1
+            for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++) ADJ[a[1] + j, a[2] + i] = 1 }
+        for (key in CL) { split(key, a, SUBSEP); split("", cnt); k = 0
+            for (y = ys[a[1]]; y <= ye[a[1]]; y++) { rowpx(y); for (x = xs[a[2]]; x <= xe[a[2]]; x++) if (!((y, x) in ADJ)) { cnt[RP[y, x]]++; k++ } }
+            if (k) B[key] = pick(cnt) }
+        return 1 }
+    # OUT: the pixels of box x0-x1, y0-y1 (within the picture) that its edge reaches (4 ways)
+    # without crossing S
+    function fill(S, x0, x1, y0, y1, OUT,   q, nq, k, a, x, y, d, i, j) {
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 >= w) x1 = w - 1; if (y1 >= h) y1 = h - 1
+        nq = 0
+        for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) if ((y == y0 || y == y1 || x == x0 || x == x1) && !((y, x) in S)) { OUT[y, x] = 1; q[++nq] = y SUBSEP x }
+        for (k = 1; k <= nq; k++) { split(q[k], a, SUBSEP); y = a[1] + 0; x = a[2] + 0
+            for (d = 0; d < 4; d++) { i = x + (d == 0) - (d == 1); j = y + (d == 2) - (d == 3)
+                if (i < x0 || i > x1 || j < y0 || j > y1 || ((j, i) in S) || ((j, i) in OUT)) continue
+                OUT[j, i] = 1; q[++nq] = j SUBSEP i } } }
     # Prints this frame of the second layer to ofile: its cells that overlap the main cells
     # where it fits clearly better (covering those entirely), transparent elsewhere
     function side(U, r, c, dr, dc,   d) { for (d = 1; d <= 3; d++) if ((r + d * dr, c + d * dc) in U) return 1; return 0 }
-    function layer(   key, a, r, c, i, j, k, q, nq, U, nu, seen, S, add, cand, d, o, col, hit, C, F, EF, ET, EMv, n, x, y, G, C3, T, r0, r1, c0, c1) {
-        split("", Pal)
-        if (flearn && fdone >= 3) return
+    function layer(   key, a, r, c, i, j, k, q, nq, U, nu, seen, S, add, cand, d, o, col, hit, n, x, y, TI) {
         # Seeds: badly explained cells the second grid explains at least twice as well (a
         # cell with no badly explained neighbour can never join a cluster: skip it)...
         for (key in bad) { split(key, a, SUBSEP); if (!near(bad, a[1], a[2])) continue
@@ -661,58 +652,21 @@ GRID_AWK='
                 if (!((side(U, r, c, 0, -1) && side(U, r, c, 0, 1)) || (side(U, r, c, -1, 0) && side(U, r, c, 1, 0)))) continue
                 errs(r, c); if (EO <= 2 * EM) add[r, c] = 1 }
             for (key in add) { U[key] = 1; nu++ } }
-        if (flearn) { if (nu) fsearch(U); return }
-        if (ov3 && nu) {
-            # Around the region, the third grid takes the cells it explains clearly better than
-            # both others, and the less clear ones next to those (each pass) unless the main grid
-            # fits them more than 1.5 times as well. The second layer keeps the rest.
-            around(U, C)
-            for (key in C) { split(key, a, SUBSEP); errs(a[1], a[2]); EMv[key] = EM; ET[key] = EO
-                EF[key] = ferr(0, hx, hy, P3, Q3, ow3, oh3, a[1], a[2])
-                if (EF[key] < EM && EF[key] < 0.75 * EO) F[key] = 1 }
-            for (k = 0; k < 3; k++) { split("", add)
-                for (key in C) { if (key in F) continue; split(key, a, SUBSEP)
-                    if (EMv[key] > 0 && EF[key] <= 1.5 * EMv[key] && EF[key] <= ET[key] && near(F, a[1], a[2])) add[key] = 1 }
-                for (key in add) F[key] = 1 }
-            # A frame is all in one piece: small pieces (under a quarter of the biggest) are bits
-            # of text that it happens to fit
-            pieces(F)
-            # Then the flat cells of its colours next to it, outside the text and within 3 of it,
-            # such as a stretch of border that happens to line up with the main grid
-            for (key in F) { split(key, a, SUBSEP); if (!(B[key] in Pal) && issolid(B[key], a[1], a[2])) Pal[B[key]] = 1 }
-            around(U, C3, 3)
-            do { k = 0
-                for (key in C3) { if ((key in F) || (key in U) || !(B[key] in Pal)) continue
-                    split(key, a, SUBSEP); if (!near(F, a[1], a[2])) continue
-                    errs(a[1], a[2]); if (!EM) { F[key] = 1; k++ } } } while (k)
-            # A frame goes around its text: none if it does not reach past the text (the cells
-            # found as such, not the flat ones joined to them) on all sides
-            r0 = c0 = 1e9; r1 = c1 = -1; split("", T)
-            for (key in U) if (!(key in F) && !seen[key]) { split(key, a, SUBSEP)
-                if (a[1] < r0) r0 = a[1]; if (a[1] > r1) r1 = a[1]; if (a[2] < c0) c0 = a[2]; if (a[2] > c1) c1 = a[2] }
-            for (key in F) { split(key, a, SUBSEP)
-                if (a[1] < r0) T["t"] = 1; if (a[1] > r1) T["b"] = 1; if (a[2] < c0) T["l"] = 1; if (a[2] > c1) T["r"] = 1 }
-            if (!(("t" in T) && ("b" in T) && ("l" in T) && ("r" in T))) split("", F)
-            for (key in F) { n++; if (key in U) { delete U[key]; nu-- } }
-        }
-        # It is the source itself (its pixels in those cells and the text cells next to them),
-        # as drawn: plain nearest neighbour, as no grid fits a frame drawn at another size and
-        # position than everything else
-        if (ov3) for (key in U) { split(key, a, SUBSEP); if (near(F, a[1], a[2])) G[key] = 1 }
-        for (key in F) G[key] = 1
-        if (ov3) for (y = 0; y < h; y++) {
-            r = ry[y]
-            if (!n || r < 0) { print clear3 > ofile3; continue }
-            rowpx(y); o = ""
-            for (x = 0; x < w; x++) { c = rx[x]; o = o ((c >= 0 && ((r, c) in G)) ? RP[y, x] : "00000000") }
+        # A speech bubble around it goes to ofile3, at the size of the source (and the second
+        # layer is then only drawn over its inside: TI, the second-grid cells all inside it)
+        n = nu && bubble(U)
+        if (n) { for (key in IN) { split(key, a, SUBSEP); TI[fl((a[2] + 0.5 - gx) / P2), fl((a[1] + 0.5 - gy) / Q2)] = 1 }
+            for (key in RG) { split(key, a, SUBSEP); delete TI[fl((a[2] + 0.5 - gx) / P2), fl((a[1] + 0.5 - gy) / Q2)] } }
+        for (y = 0; y < h; y++) {
+            if (!n) { print clear3 > ofile3; continue }
+            rowpx(y); o = ""; for (x = 0; x < w; x++) o = o (((y, x) in RG) ? RP[y, x] : "00000000")
             print toupper(o) > ofile3 }
         for (j = 0; j < oh; j++) {
             if (!nu) { print clear > ofile; continue }
             o = ""
-            # (not where it would cover any of the third layer)
-            for (i = 0; i < ow; i++) { hit = ""; k = 0
-                for (r = or0[j]; r <= or1[j]; r++) for (c = oc0[i]; c <= oc1[i]; c++) if ((r, c) in G) k = 1; else if (hit == "" && ((r, c) in U)) hit = r SUBSEP c
-                if (hit == "" || k) { o = o "00000000"; continue }
+            for (i = 0; i < ow; i++) { hit = ""
+                if (!n || ((i, j) in TI)) for (r = or0[j]; r <= or1[j] && hit == ""; r++) for (c = oc0[i]; c <= oc1[i]; c++) if ((r, c) in U) { hit = r SUBSEP c; break }
+                if (hit == "") { o = o "00000000"; continue }
                 col = ocell(i, j); o = o (col == "" ? B[hit] : col) }
             print toupper(o) > ofile } }'
 # fraction P Q p q: "A B" where grid p by q is A/B of grid P by Q (B up to 8, within 1%), or
@@ -747,28 +701,11 @@ grid_learn() {
               print c, into, $1 }'
     }
 }
-# grid_frame_learn MAP W H P Q FX FY BW BH P2 Q2 GX GY OW OH < od rows of some frames:
-# "GRID3 size_x size_y offset_x offset_y" for a third grid around the second layer that
-# explains it clearly better (only "GRID3" if there is none)
-grid_frame_learn() {
-    awk -v w="$2" -v h="$3" -v P="$4" -v Q="$5" -v fx="$6" -v fy="$7" -v bw="$8" -v bh="$9" -v ov=1 -v flearn=1 \
-        -v P2="${10}" -v Q2="${11}" -v gx="${12}" -v gy="${13}" -v ow="${14}" -v oh="${15}" "$GRID_AWK"'
-        BEGIN { cells() }
-        NR == FNR { to[$1] = $2; tot[$2] += $3; next }
-        { pixels((FNR - 1) % h, 1) }
-        END { endframe(); printf "GRID3"
-            # The best one (the first of equals), if it leaves the badly explained colours at
-            # least 10% lower
-            for (g = 1; g <= ng; g++) if (!b || FT[g] < FT[b]) b = g
-            if (b && FT[b] < 0.9 * FB) printf " %.3f %.3f %.3f %.3f", GP[b], GQ[b], GX[b], GY[b]
-            print "" }' "$1" -
-}
-# grid_restore MAP W H P Q FX FY BW BH [P2 Q2 GX GY OW OH OFILE [P3 Q3 HX HY OW3 OH3 OFILE3]]
-# < od rows: the restored frames in hex, and with a second grid its layer in hex in OFILE
-# (and with a third one, the frame it marks in OFILE3, at the source size)
+# grid_restore MAP W H P Q FX FY BW BH [P2 Q2 GX GY OW OH OFILE OFILE3] < od rows: the
+# restored frames in hex, and with a second grid its layer in hex in OFILE and a speech bubble
+# around it, if any, in OFILE3 (at the source size)
 grid_restore() {
-    local o=(-v ov=0); (( $# > 9 )) && o=(-v ov=1 -v P2="${10}" -v Q2="${11}" -v gx="${12}" -v gy="${13}" -v ow="${14}" -v oh="${15}" -v ofile="${16}")
-    (( $# > 16 )) && o+=(-v ov3=1 -v P3="${17}" -v Q3="${18}" -v hx="${19}" -v hy="${20}" -v ow3="${21}" -v oh3="${22}" -v ofile3="${23}")
+    local o=(-v ov=0); (( $# > 9 )) && o=(-v ov=1 -v P2="${10}" -v Q2="${11}" -v gx="${12}" -v gy="${13}" -v ow="${14}" -v oh="${15}" -v ofile="${16}" -v ofile3="${17}")
     awk -v w="$2" -v h="$3" -v P="$4" -v Q="$5" -v fx="$6" -v fy="$7" -v bw="$8" -v bh="$9" "${o[@]}" "$GRID_AWK"'
         BEGIN { cells() }
         NR == FNR { to[$1] = $2; tot[$2] += $3; next }
@@ -797,7 +734,7 @@ place() {
 restore_frames() {
     local a=("${grid_args[@]}")
     (( ${#layer_args[@]} )) && a+=("${layer_args[@]}" "$work/layer.hex")
-    (( ${#frame_args[@]} )) && a+=("${frame_args[@]}" "$work/frame.hex")
+    (( ${#layer_args[@]} )) && a+=("$work/frame.hex")
     ffmpeg -nostdin -v error -i "$work/frames/%06d.png" -f rawvideo -pix_fmt rgba - \
         | od -An -tx1 -v -w$((src_w * 4)) | grid_restore "$work/colours.txt" "${a[@]}" | basenc --base16 -d \
         | ffmpeg -nostdin -v error -f rawvideo -pix_fmt rgba -s "${base_w}x$base_h" -i - -start_number 1 "$work/upscaled/%06d.png" || return
@@ -807,7 +744,7 @@ restore_frames() {
             -s "${layer_args[4]}x${layer_args[5]}" -i - -start_number 1 "$work/layer/%06d.png" || return
         rm -f "$work/layer.hex"
     fi
-    if (( ${#frame_args[@]} )); then
+    if (( ${#layer_args[@]} )); then
         mkdir -p "$work/frame"
         basenc --base16 -d <"$work/frame.hex" | ffmpeg -nostdin -v error -f rawvideo -pix_fmt rgba \
             -s "${src_w}x$src_h" -i - -start_number 1 "$work/frame/%06d.png" || return
@@ -1179,7 +1116,7 @@ else
 fi
 (( out_w >= 2 )) || out_w=2
 (( out_h >= 2 )) || out_h=2
-pad="" grid_args=() layer_args=() frame_args=() layer_a=0 layer_b=1 base_w=$src_w base_h=$src_h
+pad="" grid_args=() layer_args=() layer_a=0 layer_b=1 base_w=$src_w base_h=$src_h
 if (( nearest && ! sar_fixed )) && have basenc; then
     # Pixel art that was already enlarged is first brought back to its own pixels: each grid
     # cell becomes one pixel, of the colour most common in the cell's middle (restore_frames)
@@ -1211,19 +1148,7 @@ if (( nearest && ! sar_fixed )) && have basenc; then
             # second grid is A/B of the main one (B up to 8, within 1%): e.g. 3.01/3.49 = 6/7,
             # so at 14x the main pixels are 14 px and the second layer's 12 px
             read -r layer_a layer_b < <(fraction "$gx" "$gy" "$g2x" "$g2y")
-            # Around that part, a third grid that fits clearly better marks a frame (a speech
-            # bubble's, drawn at another size or position than its text). No grid of whole
-            # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour).
-            if (( layer_a )); then
-                read -r _ g3x g3y g3fx g3fy < <(frames_hex $(( (count + n - 1) / n )) "$n" \
-                    | grid_frame_learn <(printf '%s\n' "$grid_map") "${grid_args[@]}" "${layer_args[@]}") || true
-                if [[ -n ${g3fy:-} ]]; then
-                    read -r ow3 oh3 < <(awk -v w="$src_w" -v h="$src_h" -v p="$g3x" -v q="$g3y" -v fx="$g3fx" -v fy="$g3fy" \
-                        'BEGIN { print int((w - fx) / p + 0.2), int((h - fy) / q + 0.2) }')
-                    frame_args=("$g3x" "$g3y" "$g3fx" "$g3fy" "$ow3" "$oh3")
-                fi
-            fi
-            echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with a part such as text at $(awk -v v="$g2x" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring the original pixels of both$( (( ! ${#frame_args[@]} )) || echo " (its frame kept as drawn)")."
+            echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with a part such as text at $(awk -v v="$g2x" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring the original pixels of both."
         else
             echo "Note: this looks like pixel art that was enlarged ${enlarged}×; restoring its original ${base_w}×${base_h} pixels."
         fi
@@ -1407,19 +1332,14 @@ if (( ${#grid_args[@]} )); then
         # Both layers at the output size, each with its own whole pixels: the second layer's
         # pixels are its grid size times the output's pixels per source pixel
         read -r lw lh lx ly < <(place "${layer_args[@]}" "$layer_a" "$layer_b")
-        # A third layer goes between the two
-        inputs=(-framerate 25 -i "$work/upscaled/%06d.png") mid="" top="[a]"
-        if (( ${#frame_args[@]} )); then
-            # (the source at the output's pixels per source pixel)
-            read -r fw fh fx3 fy3 < <(place 1 1 0 0 "$src_w" "$src_h" 0 1)
-            inputs+=(-framerate 25 -i "$work/frame/%06d.png")
-            mid="[1:v]scale=$fw:$fh:flags=neighbor[f];[a][f]overlay=x=$fx3:y=$fy3:format=rgb[m];" top="[m]"
-        fi
-        inputs+=(-framerate 25 -i "$work/layer/%06d.png")
+        # A speech bubble around it goes on top: the source at the output's pixels per source
+        # pixel (it is transparent where there is none)
+        read -r fw fh fx3 fy3 < <(place 1 1 0 0 "$src_w" "$src_h" 0 1)
         mkdir "$work/combined"
         watch 42 50 "Adding the second layer, frame %d of %d" count_combined - - -- \
-            ffmpeg -nostdin -v error "${inputs[@]}" -filter_complex \
-            "[0:v]scale=$((base_w * scale)):$((base_h * scale)):flags=neighbor[a];$mid[$(( ${#inputs[@]} / 4 - 1 )):v]scale=$lw:$lh:flags=neighbor[b];$top[b]overlay=x=$lx:y=$ly:format=rgb,format=rgba" \
+            ffmpeg -nostdin -v error -framerate 25 -i "$work/upscaled/%06d.png" -framerate 25 -i "$work/layer/%06d.png" \
+            -framerate 25 -i "$work/frame/%06d.png" -filter_complex \
+            "[0:v]scale=$((base_w * scale)):$((base_h * scale)):flags=neighbor[a];[1:v]scale=$lw:$lh:flags=neighbor[b];[a][b]overlay=x=$lx:y=$ly:format=rgb[m];[2:v]scale=$fw:$fh:flags=neighbor[f];[m][f]overlay=x=$fx3:y=$fy3:format=rgb,format=rgba" \
             -fps_mode passthrough -start_number 1 "$work/combined/%06d.png" \
             || die "could not combine the layers$(ram_hint)"
         scaled=$work/combined
