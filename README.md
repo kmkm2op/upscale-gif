@@ -246,9 +246,8 @@ pixels): around the second layer, upscale-gif also tries grids 1, 1.5 and 2 time
 text's size, moved by any number of half pixels, and if one explains the area clearly
 better (at least 10% fewer stray colours) and goes around the text, the frame is kept as
 drawn in the source (plain nearest neighbour): no grid of whole pixels fits a frame drawn at
-such a different size and position, and its lines can be of two widths. Only its blur is
-removed: blurred colours are snapped to the nearest real ones, and lone stray pixels take
-the colour around them. The text and the sprites keep whole, equal pixels: the output scale
+such a different size and position, and its lines can be of two widths, so it looks just
+like the input. The text and the sprites keep whole, equal pixels: the output scale
 is a multiple that gives both whole pixel sizes (for text at 6/7 of the sprites' size, a
 multiple of 7×, so at 14× the sprite pixels are 14 px and the text pixels 12 px).
 A note shows when this happens, e.g. "pixel art

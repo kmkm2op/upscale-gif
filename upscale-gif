@@ -454,7 +454,8 @@ pixel_grid() {
 # the colours badly, its grid is measured from them, and where it fits clearly better it is
 # restored on that grid as a second layer (drawn over the first when encoding). Around it, a
 # third grid that fits clearly better marks a frame (such as a speech bubble's, drawn at yet
-# another size or position), kept as drawn in the source without its blur, between the two.
+# another size or position), kept as drawn in the source (plain nearest neighbour), between
+# the two.
 GRID_AWK='
     function fl(v) { return v < 0 && v != int(v) ? int(v) - 1 : int(v) }
     # Which cell each column and row is in: rx/ry for every pixel, cx/cy only in a cell
@@ -533,7 +534,7 @@ GRID_AWK='
                         if (y > 0) ey[y] += dist(RP[y, x], RP[y - 1, x]) } } }
             frames++
         }
-        if (ov) { layer(); split("", O); split("", EMc); split("", EOc); split("", GC); split("", SN); split("", SD); split("", SOLID) }
+        if (ov) { layer(); split("", O); split("", EMc); split("", EOc); split("", GC); split("", SD); split("", SOLID) }
         split("", L); split("", RP); split("", done); split("", B); split("", bad); framed = 0 }
     # The second grid cell (i, j): the most common colour in its middle ("" if it has none)
     function ocell(i, j,   y, x, cc) {
@@ -607,31 +608,6 @@ GRID_AWK='
         for (j = -2; j <= 2; j++) for (i = -2; i <= 2; i++) if (r + j >= 0 && r + j < bh && c + i >= 0 && c + i < bw) {
             solid(r + j, c + i); if ((r + j, c + i, col) in SOLID) return 1 }
         return 0 }
-    # Colour v of a pixel near main cell (r, c), snapped to the main colours of the cells within
-    # 2 that are real colours there (with the same transparency): a blurred pixel is a mix of
-    # two of them (close to the line between them: squared RGB distance under 300), and
-    # becomes the one it is closer to; others become the nearest one
-    # (with PO set, only to colours in Pal)
-    function snap(v, r, c,   i, j, k, m, K, R, G, Bl, seenc, col, vr, vg, vb, best, bd, d, dr, dg, db, L, t, er, eg, eb) {
-        if ((v, r, c, PO) in SN) return SN[v, r, c, PO]
-        m = 0
-        for (j = -2; j <= 2; j++) for (i = -2; i <= 2; i++) if (((r + j, c + i) in B)) { col = B[r + j, c + i]
-            if (col != "" && substr(col, 7, 2) == substr(v, 7, 2) && !(col in seenc) && (!PO || (col in Pal)) && (seenc[col] = issolid(col, r, c))) {
-                for (k = ++m; k > 1 && (K[k - 1] "") > (col ""); k--) K[k] = K[k - 1]
-                K[k] = col } }
-        if (!m) return SN[v, r, c, PO] = v
-        for (k = 1; k <= m; k++) { R[k] = hex(substr(K[k], 1, 2)); G[k] = hex(substr(K[k], 3, 2)); Bl[k] = hex(substr(K[k], 5, 2)) }
-        vr = hex(substr(v, 1, 2)); vg = hex(substr(v, 3, 2)); vb = hex(substr(v, 5, 2))
-        bd = -1
-        for (k = 1; k <= m; k++) { d = (vr - R[k]) ^ 2 + (vg - G[k]) ^ 2 + (vb - Bl[k]) ^ 2; if (bd < 0 || d < bd) { bd = d; best = K[k] } }
-        for (i = 1; i <= m; i++) for (j = i + 1; j <= m; j++) {
-            dr = R[j] - R[i]; dg = G[j] - G[i]; db = Bl[j] - Bl[i]; L = dr * dr + dg * dg + db * db
-            t = ((vr - R[i]) * dr + (vg - G[i]) * dg + (vb - Bl[i]) * db) / L
-            if (t <= 0 || t >= 1) continue
-            er = vr - (R[i] + t * dr); eg = vg - (G[i] + t * dg); eb = vb - (Bl[i] + t * db)
-            d = er * er + eg * eg + eb * eb
-            if (d < bd && d < 300) { bd = d; best = t < 0.5 ? K[i] : K[j] } }
-        return SN[v, r, c, PO] = best }
     # Removes the pieces of S (cells touching, also corner to corner) smaller than a quarter
     # of the biggest one
     function pieces(S,   key, a, q, nq, k, i, j, r, c, id, size, np, big) {
@@ -645,7 +621,7 @@ GRID_AWK='
     # Prints this frame of the second layer to ofile: its cells that overlap the main cells
     # where it fits clearly better (covering those entirely), transparent elsewhere
     function side(U, r, c, dr, dc,   d) { for (d = 1; d <= 3; d++) if ((r + d * dr, c + d * dc) in U) return 1; return 0 }
-    function layer(   key, a, r, c, i, j, k, q, nq, U, nu, seen, S, add, cand, d, o, col, hit, C, F, EF, ET, EMv, n, x, y, G, C3, NB, TN, m, T, r0, r1, c0, c1) {
+    function layer(   key, a, r, c, i, j, k, q, nq, U, nu, seen, S, add, cand, d, o, col, hit, C, F, EF, ET, EMv, n, x, y, G, C3, T, r0, r1, c0, c1) {
         split("", Pal)
         if (flearn && fdone >= 3) return
         # Seeds: badly explained cells the second grid explains at least twice as well (a
@@ -721,33 +697,15 @@ GRID_AWK='
         }
         # It is the source itself (its pixels in those cells and the text cells next to them),
         # as drawn: plain nearest neighbour, as no grid fits a frame drawn at another size and
-        # position than everything else. Its blurred pixels are snapped to the real colours of
-        # those cells (SP)...
+        # position than everything else
         if (ov3) for (key in U) { split(key, a, SUBSEP); if (near(F, a[1], a[2])) G[key] = 1 }
         for (key in F) G[key] = 1
-        for (key in G) { split(key, a, SUBSEP); if (!(B[key] in Pal) && issolid(B[key], a[1], a[2])) Pal[B[key]] = 1 }
-        PO = 1
-        if (ov3 && n) for (y = 0; y < h; y++) { r = ry[y]; if (r < 0) continue
-            for (x = 0; x < w; x++) { c = rx[x]; if (c >= 0 && ((r, c) in G)) { rowpx(y); SP[x, y] = snap(RP[y, x], r, c) } } }
-        PO = 0
-        # ...and single pixels (sharing their colour with at most one of the 4 around them, 3
-        # or more of them drawn) take the colour most common around them (the first of equals,
-        # in the order above, left, right, below): its lines are 3 or more pixels wide, so those
-        # are blur
-        for (key in SP) { split(key, a, SUBSEP); x = a[1]; y = a[2]
-            NB[1] = x SUBSEP (y - 1); NB[2] = (x - 1) SUBSEP y; NB[3] = (x + 1) SUBSEP y; NB[4] = x SUBSEP (y + 1)
-            d = 0; m = 0; split("", TN)
-            for (k = 1; k <= 4; k++) { if (!(NB[k] in SP)) continue; m++; if (SP[NB[k]] == SP[key]) d++; else TN[SP[NB[k]]]++ }
-            if (m < 3 || d > 1) continue
-            col = ""; for (k = 1; k <= 4; k++) { if (!(NB[k] in SP) || SP[NB[k]] == SP[key]) continue; if (col == "" || TN[SP[NB[k]]] > TN[col]) col = SP[NB[k]] }
-            T2[key] = col }
-        for (key in T2) SP[key] = T2[key]
-        split("", T2)
         if (ov3) for (y = 0; y < h; y++) {
-            if (!n) { print clear3 > ofile3; continue }
-            o = ""; for (x = 0; x < w; x++) o = o (((x, y) in SP) ? SP[x, y] : "00000000")
+            r = ry[y]
+            if (!n || r < 0) { print clear3 > ofile3; continue }
+            rowpx(y); o = ""
+            for (x = 0; x < w; x++) { c = rx[x]; o = o ((c >= 0 && ((r, c) in G)) ? RP[y, x] : "00000000") }
             print toupper(o) > ofile3 }
-        split("", SP)
         for (j = 0; j < oh; j++) {
             if (!nu) { print clear > ofile; continue }
             o = ""
@@ -1255,8 +1213,7 @@ if (( nearest && ! sar_fixed )) && have basenc; then
             read -r layer_a layer_b < <(fraction "$gx" "$gy" "$g2x" "$g2y")
             # Around that part, a third grid that fits clearly better marks a frame (a speech
             # bubble's, drawn at another size or position than its text). No grid of whole
-            # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour),
-            # only without its blur.
+            # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour).
             if (( layer_a )); then
                 read -r _ g3x g3y g3fx g3fy < <(frames_hex $(( (count + n - 1) / n )) "$n" \
                     | grid_frame_learn <(printf '%s\n' "$grid_map") "${grid_args[@]}" "${layer_args[@]}") || true
@@ -1266,7 +1223,7 @@ if (( nearest && ! sar_fixed )) && have basenc; then
                     frame_args=("$g3x" "$g3y" "$g3fx" "$g3fy" "$ow3" "$oh3")
                 fi
             fi
-            echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with a part such as text at $(awk -v v="$g2x" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring the original pixels of both$( (( ! ${#frame_args[@]} )) || echo " (its frame kept as drawn, without the blur)")."
+            echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with a part such as text at $(awk -v v="$g2x" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring the original pixels of both$( (( ! ${#frame_args[@]} )) || echo " (its frame kept as drawn)")."
         else
             echo "Note: this looks like pixel art that was enlarged ${enlarged}×; restoring its original ${base_w}×${base_h} pixels."
         fi

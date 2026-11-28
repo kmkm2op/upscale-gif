@@ -754,46 +754,7 @@ public class UpscaleGifGridRestore {
             if (r + j >= 0 && r + j < bh && c + i >= 0 && c + i < bw && Solid(r + j, c + i).Contains(col)) return true;
         return false;
     }
-    // Colour v of a pixel near main cell (r, c), snapped to the main colours of the cells within
-    // 2 that are real colours there (with the same transparency): a blurred pixel is a mix of
-    // two of them (close to the line between them: squared RGB distance under 300), and becomes
-    // the one it is closer to; others become the nearest one (with PO set, only to colours in Pal)
     System.Collections.Generic.HashSet<uint> Pal = new System.Collections.Generic.HashSet<uint>();
-    bool PO;
-    System.Collections.Generic.Dictionary<ulong, uint> SN = new System.Collections.Generic.Dictionary<ulong, uint>();
-    uint Snap(uint v, int r, int c) {
-        ulong key = ((ulong)v << 32) | ((ulong)(uint)(r & 32767) << 16) | ((ulong)(uint)(c & 32767) << 1) | (PO ? 1UL : 0UL);
-        uint res;
-        if (SN.TryGetValue(key, out res)) return res;
-        var K = new System.Collections.Generic.List<uint>(); var seen = new System.Collections.Generic.HashSet<uint>();
-        for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
-            if (r + j < 0 || r + j >= bh || c + i < 0 || c + i >= bw) continue;
-            uint col = B[(r + j) * bw + c + i];
-            if ((col & 255) != (v & 255) || seen.Contains(col) || (PO && !Pal.Contains(col))) continue;
-            seen.Add(col);
-            if (IsSolid(col, r, c)) K.Add(col);
-        }
-        if (K.Count == 0) { SN[key] = v; return v; }
-        K.Sort();
-        int m = K.Count; var R = new int[m]; var G = new int[m]; var Bl = new int[m];
-        for (int k = 0; k < m; k++) { R[k] = (int)(K[k] >> 24); G[k] = (int)((K[k] >> 16) & 255); Bl[k] = (int)((K[k] >> 8) & 255); }
-        int vr = (int)(v >> 24), vg = (int)((v >> 16) & 255), vb = (int)((v >> 8) & 255);
-        double bd = -1; uint best = 0;
-        for (int k = 0; k < m; k++) {
-            double d = (double)(vr - R[k]) * (vr - R[k]) + (double)(vg - G[k]) * (vg - G[k]) + (double)(vb - Bl[k]) * (vb - Bl[k]);
-            if (bd < 0 || d < bd) { bd = d; best = K[k]; }
-        }
-        for (int i = 0; i < m; i++) for (int j = i + 1; j < m; j++) {
-            int dr = R[j] - R[i], dg = G[j] - G[i], db = Bl[j] - Bl[i]; double L = dr * dr + dg * dg + db * db;
-            double t = ((vr - R[i]) * dr + (vg - G[i]) * dg + (vb - Bl[i]) * db) / L;
-            if (t <= 0 || t >= 1) continue;
-            double er = vr - (R[i] + t * dr), eg = vg - (G[i] + t * dg), eb = vb - (Bl[i] + t * db);
-            double d = er * er + eg * eg + eb * eb;
-            if (d < bd && d < 300) { bd = d; best = t < 0.5 ? K[i] : K[j]; }
-        }
-        SN[key] = best;
-        return best;
-    }
     // Removes the pieces of S (cells touching, also corner to corner) smaller than a quarter of
     // the biggest one
     void Pieces(System.Collections.Generic.HashSet<int> S) {
@@ -815,7 +776,7 @@ public class UpscaleGifGridRestore {
         }
         foreach (var e in id) if (size[e.Value] < big / 4.0) S.Remove(e.Key);
     }
-    void ClearCaches() { O.Clear(); Onone.Clear(); E.Clear(); GC.Clear(); GCnone.Clear(); SN.Clear(); SD.Clear(); Pal.Clear(); PO = false; }
+    void ClearCaches() { O.Clear(); Onone.Clear(); E.Clear(); GC.Clear(); GCnone.Clear(); SD.Clear(); Pal.Clear(); }
 
     // Learning a third grid: the cells of the second grid 1, 1.5 or 2 times as big, moved by any
     // number of half pixels. Each is tried around the region of up to 3 frames (RGBA), adding
@@ -993,46 +954,15 @@ public class UpscaleGifGridRestore {
         }
         // It is the source itself (its pixels in those cells and the text cells next to them),
         // as drawn: plain nearest neighbour, as no grid fits a frame drawn at another size and
-        // position than everything else. Its blurred pixels are snapped to the real colours of
-        // those cells (SP)...
+        // position than everything else
         var Gs = new System.Collections.Generic.HashSet<int>();
         if (ov3) foreach (int key in U) if (Near(F, key / 65536, key % 65536) > 0) Gs.Add(key);
         foreach (int key in F) Gs.Add(key);
-        foreach (int key in Gs) { uint b = B[(key / 65536) * bw + key % 65536]; if (!Pal.Contains(b) && IsSolid(b, key / 65536, key % 65536)) Pal.Add(b); }
-        if (ov3 && F.Count > 0) {
-            PO = true;
-            var SP = new System.Collections.Generic.Dictionary<int, uint>();
-            for (int y = 0; y < h; y++) {
-                if (ry[y] < 0) continue;
-                for (int x = 0; x < w; x++) if (rx[x] >= 0 && Gs.Contains(Key(ry[y], rx[x]))) SP[y * w + x] = Snap(px[y * w + x], ry[y], rx[x]);
-            }
-            PO = false;
-            // ...and single pixels (sharing their colour with at most one of the 4 around them, 3
-            // or more of them drawn) take the colour most common around them (the first of
-            // equals, in the order above, left, right, below): its lines are 3 or more pixels
-            // wide, so those are blur
-            var T2 = new System.Collections.Generic.Dictionary<int, uint>();
-            int[] dx = { 0, -1, 1, 0 }, dy = { -1, 0, 0, 1 };
-            foreach (var e in SP) {
-                int x0 = e.Key % w, y0 = e.Key / w, nb = 0, m = 0;
-                var TN = new System.Collections.Generic.Dictionary<uint, int>(); var nc = new uint?[4];
-                for (int k = 0; k < 4; k++) {
-                    int x = x0 + dx[k], y = y0 + dy[k]; uint v;
-                    if (x < 0 || x >= w || y < 0 || y >= h || !SP.TryGetValue(y * w + x, out v)) continue;
-                    nc[k] = v; m++;
-                    if (v == e.Value) nb++; else { int t; TN.TryGetValue(v, out t); TN[v] = t + 1; }
-                }
-                if (m < 3 || nb > 1) continue;
-                bool found = false; uint best = 0;
-                for (int k = 0; k < 4; k++) {
-                    if (nc[k] == null || nc[k].Value == e.Value) continue;
-                    if (!found || TN[nc[k].Value] > TN[best]) { best = nc[k].Value; found = true; }
-                }
-                T2[e.Key] = best;
-            }
-            foreach (var e in T2) SP[e.Key] = e.Value;
-            foreach (var e in SP) {
-                int p = e.Key * 4; uint col = e.Value;
+        if (ov3 && F.Count > 0) for (int y = 0; y < h; y++) {
+            if (ry[y] < 0) continue;
+            for (int x = 0; x < w; x++) {
+                if (rx[x] < 0 || !Gs.Contains(Key(ry[y], rx[x]))) continue;
+                int p = (y * w + x) * 4; uint col = px[y * w + x];
                 fo[p] = (byte)(col >> 24); fo[p + 1] = (byte)(col >> 16); fo[p + 2] = (byte)(col >> 8); fo[p + 3] = (byte)col;
             }
         }
@@ -1901,8 +1831,7 @@ function Invoke-Main {
                 $layerA, $layerB = & $fraction $layer[0] $layer[1]
                 # Around that part, a third grid that fits clearly better marks a frame (a speech
                 # bubble's, drawn at another size or position than its text). No grid of whole
-                # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour),
-                # only without its blur.
+                # pixels fits it, so it is kept as drawn in the source (plain nearest neighbour).
                 if ($layerA -and $sample) {
                     $restorer.LearnFrame($sample)
                     if ($restorer.Frame) {
@@ -1911,7 +1840,7 @@ function Invoke-Main {
                         $restorer.SetFrame($frameGrid[0], $frameGrid[1], $frameGrid[2], $frameGrid[3], [int]$ow3, [int]$oh3)
                     }
                 }
-                $its = if ($frameGrid) { ' (its frame kept as drawn, without the blur)' } else { '' }
+                $its = if ($frameGrid) { ' (its frame kept as drawn)' } else { '' }
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x, with a part such as text at $('{0:0.##}' -f $layer[0])x; restoring the original pixels of both${its}."
             } else {
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x; restoring its original ${baseW}x${baseH} pixels."
