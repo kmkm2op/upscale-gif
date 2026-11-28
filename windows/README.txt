@@ -18,7 +18,8 @@ with sharp square pixels, without AI, and works even without a GPU. GIF, WebP (a
 lossless with nearest) and PNG suit pixel art best. Pixel art that was already enlarged
 (even by an uneven factor such as 3.5x) is detected and restored to its original pixels
 first, so uneven pixel sizes and blurred edges don't carry over. A part enlarged by a
-different factor, such as a speech bubble's text, is restored on its own pixel grid.
+different factor, such as a speech bubble's text, is restored on its own pixel grid, and
+the bubble's frame on a third one when it was drawn at yet another size.
 
 It is made for GIFs, short clips and images. For long videos, a dedicated video upscaler
 such as Video2X (github.com/k4yt3x/video2x) or REAL Video Enhancer

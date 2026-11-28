@@ -240,13 +240,18 @@ Some animations add a part on a grid of its own, such as a speech bubble whose t
 enlarged 3× while the sprites were enlarged 3.5×. upscale-gif finds the cells the main
 grid explains badly, measures the grid their edges line up on, and restores that part on
 its own grid as a second layer, drawn over the first at the output size. The flat area
-around that part (such as the inside of a speech bubble) joins it, so the bubble's frame is
-restored on the same grid as its text. Each layer keeps
-whole, equal pixels: the output scale is a multiple that gives both layers whole pixel
-sizes (for text at 6/7 of the sprites' size, a multiple of 7×, so at 14× the sprite pixels
-are 14 px and the text pixels 12 px). The second layer's pixels are a little smaller or
-larger than the first's, as in the source. A note shows when this happens, e.g. "pixel art that was enlarged 3.49×, with a
-part such as text at 3.01×", or otherwise "restoring its original 88×88 pixels".
+around that part (such as the inside of a speech bubble) joins it. A bubble's frame is often
+drawn at yet another size or position than its text (in the example, 1.5× the text's
+pixels): around the second layer, upscale-gif also tries grids 1, 1.5 and 2 times the
+text's size, moved by any number of half pixels, and if one explains the area clearly
+better (at least 10% fewer stray colours), the frame is restored on that grid as a third
+layer, between the other two, with the same shape as in the source. Each layer keeps
+whole, equal pixels: the output scale is a multiple that gives every layer whole pixel
+sizes (for text at 6/7 of the sprites' size and a frame at 9/7, a multiple of 7×, so at 14×
+the sprite pixels are 14 px, the text pixels 12 px and the frame pixels 18 px). The layers'
+pixels differ in size, as in the source. A note shows when this happens, e.g. "pixel art
+that was enlarged 3.49×, with a part such as text at 3.01× and its frame at 4.51×", or
+otherwise "restoring its original 88×88 pixels".
 Photos, video and art at its original size are left as they are.
 
 ## Finding Upscayl
