@@ -496,12 +496,16 @@ public class UpscaleGifGridRestore {
     // The second grid
     bool ov; double P2, Q2, gx, gy; int ow, oh;
     int[] ocx, ocy, oxs, oxe, oys, oye, oc0, oc1, or0, or1;
+    // The third grid (a speech bubble's outline)
+    bool ov3; double P3, Q3, hx, hy; int ow3, oh3;
     System.Collections.Generic.Dictionary<uint, uint> to = new System.Collections.Generic.Dictionary<uint, uint>();
     System.Collections.Generic.Dictionary<uint, long> tot = new System.Collections.Generic.Dictionary<uint, long>();
     System.Diagnostics.Process dec, enc, enc2, enc3; System.Threading.Thread thread;
     public volatile bool Done; public string Error;
     // From Learn: the second grid { size x, size y, offset x, offset y, strength x, strength y } or null
     public double[] Layer;
+    // From LearnFrame: the third grid { size x, size y, offset x, offset y } or null
+    public double[] Frame;
 
     public UpscaleGifGridRestore(int w, int h, double P, double Q, double fx, double fy, int bw, int bh) {
         this.w = w; this.h = h; this.bw = bw; this.bh = bh; this.P = P; this.Q = Q; this.fx = fx; this.fy = fy;
@@ -531,6 +535,10 @@ public class UpscaleGifGridRestore {
         for (int k = 0; k < ow; k++) { oc0[k] = Fl((gx + k * P2 - fx) / P); oc1[k] = Fl((gx + (k + 1) * P2 - fx) / P - 0.000001); }
         for (int k = 0; k < oh; k++) { or0[k] = Fl((gy + k * Q2 - fy) / Q); or1[k] = Fl((gy + (k + 1) * Q2 - fy) / Q - 0.000001); }
     }
+    public void SetFrame(double P3, double Q3, double hx, double hy, int ow3, int oh3) {
+        ov3 = true; this.P3 = P3; this.Q3 = Q3; this.hx = hx; this.hy = hy; this.ow3 = ow3; this.oh3 = oh3;
+    }
+
     static uint Px(byte[] b, int i) { return ((uint)b[i] << 24) | ((uint)b[i + 1] << 16) | ((uint)b[i + 2] << 8) | b[i + 3]; }
     static int Dist(uint a, uint b) {
         int s = 0;
@@ -677,6 +685,98 @@ public class UpscaleGifGridRestore {
         for (int d = 1; d <= 3; d++) if (U.Contains(Key(r + d * dr, c + d * dc))) return true;
         return false;
     }
+    // Cell (i, j) of grid id, with its origin at X0, Y0 and cells pp by qq: the most common
+    // colour in its middle (any: false if none)
+    System.Collections.Generic.Dictionary<long, uint> GC = new System.Collections.Generic.Dictionary<long, uint>();
+    System.Collections.Generic.HashSet<long> GCnone = new System.Collections.Generic.HashSet<long>();
+    uint GCol(int id, double X0, double Y0, double pp, double qq, int i, int j, out bool any) {
+        long key = ((long)id * 65536 + j) * 65536 + i; uint v;
+        if (GC.TryGetValue(key, out v)) { any = true; return v; }
+        if (GCnone.Contains(key)) { any = false; return 0; }
+        int x0 = Fl(X0 + i * pp), x1 = Fl(X0 + (i + 1) * pp), y0 = Fl(Y0 + j * qq), y1 = Fl(Y0 + (j + 1) * qq);
+        if (x0 < 0) x0 = 0; if (x1 >= w) x1 = w - 1; if (y0 < 0) y0 = 0; if (y1 >= h) y1 = h - 1;
+        var cc = new System.Collections.Generic.Dictionary<uint, int>();
+        for (int y = y0; y <= y1; y++) {
+            double t = (y + 0.5 - Y0) / qq - j; if (t <= 0.2 || t >= 0.8) continue;
+            for (int x = x0; x <= x1; x++) {
+                t = (x + 0.5 - X0) / pp - i;
+                if (t > 0.2 && t < 0.8) { uint c = px[y * w + x]; int m; cc.TryGetValue(c, out m); cc[c] = m + 1; }
+            }
+        }
+        v = Pick(cc, out any);
+        if (any) GC[key] = v; else GCnone.Add(key);
+        return v;
+    }
+    // How far all the pixels of main cell (r, c) are from the cells of grid id (n by m of them)
+    // over them
+    long FErr(int id, double X0, double Y0, double pp, double qq, int n, int m, int r, int c) {
+        long e = 0; uint bc = B[r * bw + c];
+        for (int y = ys[r]; y <= ye[r]; y++) {
+            int j = Fl((y + 0.5 - Y0) / qq);
+            for (int x = xs[c]; x <= xe[c]; x++) {
+                int i = Fl((x + 0.5 - X0) / pp); uint o = bc;
+                if (i >= 0 && i < n && j >= 0 && j < m) { bool any; uint t = GCol(id, X0, Y0, pp, qq, i, j, out any); if (any) o = t; }
+                e += Dist(px[y * w + x], o);
+            }
+        }
+        return e;
+    }
+    // The main cells within 2 of the region U
+    System.Collections.Generic.HashSet<int> Around(System.Collections.Generic.HashSet<int> U) { return Around(U, 2); }
+    System.Collections.Generic.HashSet<int> Around(System.Collections.Generic.HashSet<int> U, int d) {
+        var C = new System.Collections.Generic.HashSet<int>();
+        foreach (int key in U) {
+            int r0 = key / 65536, c0 = key % 65536;
+            for (int i = -d; i <= d; i++) for (int j = -d; j <= d; j++) {
+                int r = r0 + j, c = c0 + i;
+                if (r >= 0 && r < bh && c >= 0 && c < bw) C.Add(Key(r, c));
+            }
+        }
+        return C;
+    }
+    // Learning a third grid: the cells of the second grid 1, 1.5 or 2 times as big, moved by any
+    // number of half pixels. Each is tried around the region of up to 3 frames (RGBA), adding
+    // up for each cell how badly the best of the three grids explains it, and of the first
+    // two. The best one (the first of equals) becomes Frame if it leaves the badly explained
+    // colours at least 10% lower. Speech bubbles can have their frame drawn at another size
+    // and position than their text.
+    public void LearnFrame(byte[] rgba) {
+        Frame = null;
+        var G = new System.Collections.Generic.List<double[]>();
+        for (int kk = 0; kk < 3; kk++) {
+            double k = 1 + kk * 0.5, pp = k * P2, qq = k * Q2;
+            for (int dx = 0; dx * 0.5 < pp; dx++) for (int dy = 0; dy * 0.5 < qq; dy++) {
+                double X0 = gx + dx * 0.5; while (X0 >= 0.8 * pp) X0 -= pp;
+                double Y0 = gy + dy * 0.5; while (Y0 >= 0.8 * qq) Y0 -= qq;
+                G.Add(new double[] { pp, qq, X0, Y0, (int)((w - X0) / pp + 0.2), (int)((h - Y0) / qq + 0.2) });
+            }
+        }
+        var FT = new long[G.Count]; long FB = 0; int fdone = 0, frame = w * h * 4;
+        for (int b = 0; b + frame <= rgba.Length && fdone < 3; b += frame) {
+            Cells(rgba, b, true, null); O.Clear(); Onone.Clear(); E.Clear(); GC.Clear(); GCnone.Clear();
+            var U = Region();
+            if (U.Count == 0) continue;
+            var LC = new System.Collections.Generic.List<int>(); var LM = new System.Collections.Generic.List<long>();
+            foreach (int key in Around(U)) {
+                long em, eo; Errs(key / 65536, key % 65536, out em, out eo);
+                long m = Math.Min(em, eo); if (m > 0) { LC.Add(key); LM.Add(m); FB += m; }
+            }
+            if (LC.Count == 0) continue;
+            fdone++;
+            for (int g = 0; g < G.Count; g++) {
+                double[] d = G[g];
+                for (int t = 0; t < LC.Count; t++) {
+                    long e = FErr(g + 1, d[2], d[3], d[0], d[1], (int)d[4], (int)d[5], LC[t] / 65536, LC[t] % 65536);
+                    FT[g] += Math.Min(e, LM[t]);
+                }
+            }
+        }
+        O.Clear(); Onone.Clear(); E.Clear(); GC.Clear(); GCnone.Clear();
+        int best = -1;
+        for (int g = 0; g < G.Count; g++) if (best < 0 || FT[g] < FT[best]) best = g;
+        if (best >= 0 && FT[best] < 0.9 * FB) Frame = new double[] { G[best][0], G[best][1], G[best][2], G[best][3] };
+    }
+
     // A speech bubble around the text (region U), kept exactly as drawn: plain nearest
     // neighbour, as its outline is often drawn at another size and position than the text and
     // everything else. Its inside is the area of the colour most common in the text cells (its
@@ -686,14 +786,19 @@ public class UpscaleGifGridRestore {
     // next to it (which are the source as drawn), IN: the inside, and changes the main cells
     // under RG to the colour most common in them away from it. Returns false if there is none.
     System.Collections.Generic.HashSet<int> RG = new System.Collections.Generic.HashSet<int>(), IN = new System.Collections.Generic.HashSet<int>();
+    // SH: the whole bubble (outline, what it encloses and the inside), BG: its background, PB:
+    // its real colours (those that fill a 2 by 2 square of pixels in it)
+    System.Collections.Generic.HashSet<int> SH = new System.Collections.Generic.HashSet<int>();
+    System.Collections.Generic.HashSet<uint> PB = new System.Collections.Generic.HashSet<uint>();
+    uint BG;
     bool Bubble(System.Collections.Generic.HashSet<int> U) {
-        RG.Clear(); IN.Clear();
+        RG.Clear(); IN.Clear(); SH.Clear(); PB.Clear();
         var cnt = new System.Collections.Generic.Dictionary<uint, int>();
         foreach (int key in U) {
             int r = key / 65536, c = key % 65536;
             for (int y = ys[r]; y <= ye[r]; y++) for (int x = xs[c]; x <= xe[c]; x++) { uint v = px[y * w + x]; int m; cnt.TryGetValue(v, out m); cnt[v] = m + 1; }
         }
-        bool any; uint bg = Pick(cnt, out any);
+        bool any; uint bg = Pick(cnt, out any); BG = bg;
         var I = new System.Collections.Generic.HashSet<int>(); var q = new System.Collections.Generic.List<int>();
         foreach (int key in U) {
             int r = key / 65536, c = key % 65536;
@@ -732,26 +837,63 @@ public class UpscaleGifGridRestore {
         // The outline and what it encloses, and the pixels next to them
         OUT = Fill(I, x0 - 8, x1 + 8, y0 - 8, y1 + 8);
         for (int y = y0 - 7; y <= y1 + 7; y++) for (int x = x0 - 7; x <= x1 + 7; x++) {
-            if (y < 0 || y >= h || x < 0 || x >= w || OUT.Contains(y * w + x) || IN.Contains(y * w + x)) continue;
+            if (y < 0 || y >= h || x < 0 || x >= w || OUT.Contains(y * w + x)) continue;
+            SH.Add(y * w + x);
+            if (IN.Contains(y * w + x)) continue;
             for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++)
                 if (y + j >= 0 && y + j < h && x + i >= 0 && x + i < w && !IN.Contains((y + j) * w + x + i)) RG.Add((y + j) * w + x + i);
         }
-        // The main cells under it, from their pixels not next to it
+        foreach (int p in SH) {
+            int y = p / w, x = p % w; if (y + 1 >= h || x + 1 >= w) continue;
+            uint a = px[p]; if (px[p + 1] == a && px[p + w] == a && px[p + w + 1] == a) PB.Add(a);
+        }
+        // The main cells under it take the colour most common in their pixels outside it, away
+        // from it if they have any, else in the cells around them (where they show beside it,
+        // they then match what is there)
         var CL = new System.Collections.Generic.HashSet<int>(); var ADJ = new System.Collections.Generic.HashSet<long>();
-        foreach (int p in RG) {
+        foreach (int p in SH) {
             int y = p / w, x = p % w;
             if (ry[y] >= 0 && rx[x] >= 0) CL.Add(Key(ry[y], rx[x]));
             for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) ADJ.Add((long)(y + j) * 65536 + x + i);
         }
+        var cn2 = new System.Collections.Generic.Dictionary<uint, int>();
         foreach (int key in CL) {
-            int r = key / 65536, c = key % 65536, n = 0; cnt.Clear();
-            for (int y = ys[r]; y <= ye[r]; y++) for (int x = xs[c]; x <= xe[c]; x++) {
-                if (ADJ.Contains((long)y * 65536 + x)) continue;
-                uint v = px[y * w + x]; int m; cnt.TryGetValue(v, out m); cnt[v] = m + 1; n++;
+            int r0 = key / 65536, c0 = key % 65536, k = 0, d = 0; cnt.Clear(); cn2.Clear();
+            for (int y = ys[r0]; y <= ye[r0]; y++) for (int x = xs[c0]; x <= xe[c0]; x++) {
+                if (SH.Contains(y * w + x)) continue;
+                uint v = px[y * w + x]; int m; cn2.TryGetValue(v, out m); cn2[v] = m + 1; d++;
+                if (!ADJ.Contains((long)y * 65536 + x)) { cnt.TryGetValue(v, out m); cnt[v] = m + 1; k++; }
             }
-            if (n > 0) B[r * bw + c] = Pick(cnt, out any);
+            if (d == 0) for (int r = r0 - 1; r <= r0 + 1; r++) for (int c = c0 - 1; c <= c0 + 1; c++) {
+                if (r < 0 || r >= bh || c < 0 || c >= bw) continue;
+                for (int y = ys[r]; y <= ye[r]; y++) for (int x = xs[c]; x <= xe[c]; x++) {
+                    if (SH.Contains(y * w + x)) continue;
+                    uint v = px[y * w + x]; int m; cn2.TryGetValue(v, out m); cn2[v] = m + 1; d++;
+                }
+            }
+            if (k > 0) B[r0 * bw + c0] = Pick(cnt, out any); else if (d > 0) B[r0 * bw + c0] = Pick(cn2, out any);
         }
         return true;
+    }
+    // Cell (i, j) of the third grid in the bubble: the colour most common in its middle among
+    // its real colours, else in all of it, else its background
+    uint BCol(int i, int j) {
+        int x0 = Math.Max(Fl(hx + i * P3), 0), x1 = Math.Min(Fl(hx + (i + 1) * P3), w - 1);
+        int y0 = Math.Max(Fl(hy + j * Q3), 0), y1 = Math.Min(Fl(hy + (j + 1) * Q3), h - 1);
+        var cc = new System.Collections.Generic.Dictionary<uint, int>(); var cd = new System.Collections.Generic.Dictionary<uint, int>();
+        for (int y = y0; y <= y1; y++) {
+            double t = (y + 0.5 - hy) / Q3 - j;
+            for (int x = x0; x <= x1; x++) {
+                uint v = px[y * w + x]; if (!PB.Contains(v)) continue;
+                double m = (x + 0.5 - hx) / P3 - i; int n;
+                if (t > 0.2 && t < 0.8 && m > 0.2 && m < 0.8) { cc.TryGetValue(v, out n); cc[v] = n + 1; }
+                else if (t > 0 && t < 1 && m > 0 && m < 1) { cd.TryGetValue(v, out n); cd[v] = n + 1; }
+            }
+        }
+        bool any;
+        if (cc.Count > 0) return Pick(cc, out any);
+        if (cd.Count > 0) return Pick(cd, out any);
+        return BG;
     }
     // The pixels of box x0-x1, y0-y1 (within the picture) that its edge reaches (4 ways)
     // without crossing S
@@ -839,14 +981,13 @@ public class UpscaleGifGridRestore {
         return U;
     }
     // This frame of the second layer: its cells that overlap the main cells where it fits
-    // clearly better (covering those entirely), transparent elsewhere; and of the third (fo)
-    // This frame of the second layer: its cells that overlap the main cells where it fits
     // clearly better (covering those entirely), transparent elsewhere; and a speech bubble
-    // around it (fo, at the source size, transparent where there is none)
+    // around it (fo, on the third grid if there is one, else at the source size, transparent
+    // where there is none)
     byte[] LayerFrame(out byte[] fo) {
         O.Clear(); Onone.Clear(); E.Clear();
         var o = new byte[ow * oh * 4];
-        fo = new byte[w * h * 4];
+        fo = ov3 ? new byte[ow3 * oh3 * 4] : new byte[w * h * 4];
         var U = Region();
         if (U.Count == 0) return o;
         // The second layer is then only drawn over its inside: TI, the second-grid cells all
@@ -856,7 +997,20 @@ public class UpscaleGifGridRestore {
         if (n) {
             foreach (int p in IN) TI.Add((long)Fl((p / w + 0.5 - gy) / Q2) * 65536 + Fl((p % w + 0.5 - gx) / P2));
             foreach (int p in RG) TI.Remove((long)Fl((p / w + 0.5 - gy) / Q2) * 65536 + Fl((p % w + 0.5 - gx) / P2));
-            foreach (int p in RG) { uint col = px[p]; fo[p * 4] = (byte)(col >> 24); fo[p * 4 + 1] = (byte)(col >> 16); fo[p * 4 + 2] = (byte)(col >> 8); fo[p * 4 + 3] = (byte)col; }
+            // With a third grid (the size its outline is drawn at), on that grid: each of its
+            // cells whose middle is in the bubble, of the colour most common in its middle (the
+            // background inside), so that its pixels are whole and the same size. Otherwise its
+            // outline as drawn in the source.
+            if (ov3) for (int j = 0; j < oh3; j++) {
+                int y = Fl(hy + (j + 0.5) * Q3);
+                for (int i = 0; i < ow3; i++) {
+                    int x = Fl(hx + (i + 0.5) * P3);
+                    if (x < 0 || x >= w || y < 0 || y >= h || !SH.Contains(y * w + x)) continue;
+                    uint col = IN.Contains(y * w + x) ? BG : BCol(i, j); int p = (j * ow3 + i) * 4;
+                    fo[p] = (byte)(col >> 24); fo[p + 1] = (byte)(col >> 16); fo[p + 2] = (byte)(col >> 8); fo[p + 3] = (byte)col;
+                }
+            }
+            else foreach (int p in RG) { uint col = px[p]; fo[p * 4] = (byte)(col >> 24); fo[p * 4 + 1] = (byte)(col >> 16); fo[p * 4 + 2] = (byte)(col >> 8); fo[p * 4 + 3] = (byte)col; }
         }
         for (int j = 0; j < oh; j++) for (int i = 0; i < ow; i++) {
             if (n && !TI.Contains((long)j * 65536 + i)) continue;
@@ -1665,7 +1819,7 @@ function Invoke-Main {
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
     $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
-    $pad = ''; $grid = $null; $layer = $null; $baseW = $srcW; $baseH = $srcH
+    $pad = ''; $grid = $null; $layer = $null; $frameGrid = $null; $frameA = 0; $frameB = 1; $baseW = $srcW; $baseH = $srcH
     if ($nearestMode -and -not $sarFixed) {
         # Pixel art that was already enlarged is first brought back to its own pixels: each grid
         # cell becomes one pixel, of the colour most common in the cell's middle
@@ -1680,10 +1834,11 @@ function Invoke-Main {
             $sel = "select=not(mod(n\,$([math]::Floor(($count + $n - 1) / $n))))"
             $f = if ($null -ne $aidx) { @('-filter_complex', "[0:$vidx][0:$aidx]alphamerge,format=rgba,$sel") } else { @('-map', "0:$vidx", '-vf', $sel, '-pix_fmt', 'rgba') }
             $raw = Join-Path $workRoot ('upscale-gif-learn.' + [IO.Path]::GetRandomFileName() + '.rgba')
+            $sample = $null
             try {
                 $r = Invoke-Tool $script:FFmpeg (@('-nostdin', '-v', 'error', '-i', $inputFile) + $f + @('-fps_mode', 'passthrough', '-frames:v', "$n",
                     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-y', $raw)) -Capture
-                if ($r.Code -eq 0 -and (Test-Path -LiteralPath $raw)) { $restorer.Learn([IO.File]::ReadAllBytes($raw)) }
+                if ($r.Code -eq 0 -and (Test-Path -LiteralPath $raw)) { $sample = [IO.File]::ReadAllBytes($raw); $restorer.Learn($sample) }
             } finally { Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue }
             $enlarged = '{0:0.##}' -f $grid[0]
             $layer = $null; $layerA = 0; $layerB = 1
@@ -1717,6 +1872,20 @@ function Invoke-Main {
                 # second grid is A/B of the main one (B up to 8, within 1%): e.g. 3.01/3.49 = 6/7,
                 # so at 14x the main pixels are 14 px and the second layer's 12 px
                 $layerA, $layerB = & $fraction $layer[0] $layer[1]
+                # A speech bubble around that part can have its outline drawn at yet another size
+                # and position: the grid it is on, if it gets whole pixels too
+                if ($layerA -and $sample) {
+                    $restorer.LearnFrame($sample)
+                    if ($restorer.Frame) {
+                        $g3 = & $f3 $restorer.Frame
+                        $fa, $fb = & $fraction $g3[0] $g3[1]
+                        if ($fa) {
+                            $frameGrid = $g3; $frameA = $fa; $frameB = $fb
+                            $ow3 = [long][math]::Floor(($srcW - $g3[2]) / $g3[0] + 0.2); $oh3 = [long][math]::Floor(($srcH - $g3[3]) / $g3[1] + 0.2)
+                            $restorer.SetFrame($g3[0], $g3[1], $g3[2], $g3[3], [int]$ow3, [int]$oh3)
+                        }
+                    }
+                }
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x, with a part such as text at $('{0:0.##}' -f $layer[0])x; restoring the original pixels of both."
             } else {
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x; restoring its original ${baseW}x${baseH} pixels."
@@ -1729,6 +1898,8 @@ function Invoke-Main {
         $scale = if ($width) { [math]::Floor($outW / $baseW) } else { [math]::Floor($outH / $baseH) }
         $scale = [long][math]::Max($scale, 1)
         $step = if ($layer -and $layerA) { $layerB } else { 1 }
+        # (with a speech bubble on a grid of its own, a multiple of both)
+        $k = $step; while ($k % $frameB) { $k += $step }; $step = $k
         # (with a third grid, a multiple of both)
         $scale = [long][math]::Max([math]::Floor($scale / $step) * $step, $step)
         $req = "${outW}x${outH}"
@@ -1831,9 +2002,11 @@ function Invoke-Main {
             }
             if ($layer) {
                 [void](New-Item -ItemType Directory -Path $frameDir)
-                # (the source at the output's pixels per source pixel)
-                $fw, $fh, $fx3, $fy3 = & $place @(1, 1, 0, 0) $srcW $srcH 0 1
-                $frameArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "${srcW}x${srcH}", '-i', '-',
+                # (on its own grid with whole pixels, or else the source at the output's pixels per
+                # source pixel)
+                if ($frameGrid) { $fw, $fh, $fx3, $fy3 = & $place $frameGrid $ow3 $oh3 $frameA $frameB; $fs = "${ow3}x${oh3}" }
+                else { $fw, $fh, $fx3, $fy3 = & $place @(1, 1, 0, 0) $srcW $srcH 0 1; $fs = "${srcW}x${srcH}" }
+                $frameArgs = (@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', $fs, '-i', '-',
                     '-start_number', '1', (Join-Path $frameDir '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '
             }
             $job.Start($script:FFmpeg,
@@ -1861,11 +2034,10 @@ function Invoke-Main {
                 $lw, $lh, $lx, $ly = & $place $layer $ow $oh $layerA $layerB
                 $combined = Join-Path $work 'combined'
                 [void](New-Item -ItemType Directory -Path $combined)
-                # A speech bubble around it goes on top: the source at the output's pixels per
-                # source pixel (it is transparent where there is none)
-                $a = @('-nostdin', '-v', 'error', '-framerate', '25', '-i', (Join-Path $restored '%06d.png'), '-framerate', '25', '-i', (Join-Path $layerDir '%06d.png'),
-                    '-framerate', '25', '-i', (Join-Path $frameDir '%06d.png'),
-                    '-filter_complex', "[0:v]scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor[a];[1:v]scale=${lw}:${lh}:flags=neighbor[b];[a][b]overlay=x=${lx}:y=${ly}:format=rgb[m];[2:v]scale=${fw}:${fh}:flags=neighbor[f];[m][f]overlay=x=${fx3}:y=${fy3}:format=rgb,format=rgba",
+                # A speech bubble around it goes between the two (transparent where there is none)
+                $a = @('-nostdin', '-v', 'error', '-framerate', '25', '-i', (Join-Path $restored '%06d.png'), '-framerate', '25', '-i', (Join-Path $frameDir '%06d.png'),
+                    '-framerate', '25', '-i', (Join-Path $layerDir '%06d.png'),
+                    '-filter_complex', "[0:v]scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor[a];[1:v]scale=${fw}:${fh}:flags=neighbor[f];[a][f]overlay=x=${fx3}:y=${fy3}:format=rgb[m];[2:v]scale=${lw}:${lh}:flags=neighbor[b];[m][b]overlay=x=${lx}:y=${ly}:format=rgb,format=rgba",
                     '-fps_mode', 'passthrough', '-start_number', '1', (Join-Path $combined '%06d.png'))
                 $w = New-Watch 42 50 'Adding the second layer, frame {0} of {1}' $count -Dir $combined
                 if ((Invoke-Tool $script:FFmpeg $a -Watch $w).Code -ne 0) { Fail 'could not combine the layers' }

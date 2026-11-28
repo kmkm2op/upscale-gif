@@ -241,13 +241,14 @@ enlarged 3× while the sprites were enlarged 3.5×. upscale-gif finds the cells 
 grid explains badly, measures the grid their edges line up on, and restores that part on
 its own grid as a second layer, drawn over the first at the output size. The flat area
 around that part (such as the inside of a speech bubble) joins it. A speech bubble's outline
-is often drawn at yet another size and position, which no grid of whole pixels fits, so it
-is kept exactly as drawn (plain nearest neighbour of the input): upscale-gif finds the
-bubble's inside (the background colour of the text, closed all round), takes the colour
-around it as the outline, and draws the input's own pixels there, the same in every frame.
-The text and the sprites keep whole, equal pixels: the output scale
-is a multiple that gives both whole pixel sizes (for text at 6/7 of the sprites' size, a
-multiple of 7×, so at 14× the sprite pixels are 14 px and the text pixels 12 px).
+is often drawn at yet another size and position (in the example, 1.5× the text's pixels):
+upscale-gif finds the bubble from its pixels (the background colour of the text, closed all
+round, and the outline colour around it), measures the grid its outline is drawn on, and
+draws the whole bubble on that grid, with whole, equal pixels of its real colours (no blur),
+the same in every frame. Every layer keeps whole, equal pixels: the output scale is a multiple
+that gives all of them whole pixel sizes (for text at 6/7 of the sprites' size and a bubble
+at 9/7, a multiple of 7×, so at 14× the sprite pixels are 14 px, the text pixels 12 px and
+the bubble's 18 px).
 A note shows when this happens, e.g. "pixel art
 that was enlarged 3.49×, with a part such as text at 3.01×", or otherwise "restoring its
 original 88×88 pixels".
