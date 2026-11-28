@@ -135,7 +135,7 @@ upscale-gif -h     # help
 | `-q quality`| 1–100 (default 80); ignored for `png` |
 | `-d downsampler` | `lanczos` (default), `spline`, `bicubic` or `area`; see [Downsamplers](#downsamplers) |
 | `-g gpu`    | GPU ID as listed by `-c`, a list such as `0,1`, or `auto` |
-| `-t where`  | Temporary frames: `auto` (default), `ram` or `disk`; see [Temporary files](#temporary-files). Linux only |
+| `-t where`  | Temporary frames: `disk` (default) or `ram`; see [Temporary files](#temporary-files). Linux only |
 | `-o output` | Output file. Default: `<input>_<W>x<H>.<format>` next to the input |
 
 Anything you don't give on the command line is asked for:
@@ -236,12 +236,13 @@ of 18 or less, typical of compression noise) count as one colour, so noise can't
 the real colour; the result only uses colours from the original. It then scales that
 restored picture by a whole number, so every pixel comes out the same size.
 
-Some pixel art mixes resolutions, e.g. text drawn at twice the resolution of the sprites.
-When enough cells (0.2%) contain strong detail at half the grid size, the picture is
-restored at that finer resolution instead: ordinary cells still become one colour (as
-2×2 pixels), while cells with strong detail whose neighbours have it too, such as text,
-keep their four half-size pixels. A note shows when this
-happens, e.g. "pixel art that was enlarged 3.49×; restoring its original 88×88 pixels".
+Some animations add a part on a grid of its own, such as a speech bubble whose text was
+enlarged 3× while the sprites were enlarged 3.5×. upscale-gif finds the cells the main
+grid explains badly, measures the grid their edges line up on, and restores that part on
+its own grid as a second layer, drawn over the first at the output size. Each layer keeps
+whole, equal pixels; the second layer's pixels are a little smaller or larger than the
+first's. A note shows when this happens, e.g. "pixel art that was enlarged 3.49×, with a
+part such as text at 3.01×", or otherwise "restoring its original 88×88 pixels".
 Photos, video and art at its original size are left as they are.
 
 ## Finding Upscayl
@@ -318,11 +319,14 @@ when none is found. A run stops with the same explanation before asking for anyt
 The frames are saved as PNG files while they're worked on: the originals plus the upscaled
 copies. The settings window shows how much space that needs.
 
-On Linux they're kept **in RAM** (`/dev/shm`) when they fit in half of the memory that's
-currently available, which spares the drive; otherwise they go to `~/.cache`. They're
-deleted when the run ends. `-t ram` uses RAM even for larger jobs (up to all but 2 GB of the
-available memory), and `-t disk` always uses the drive. `upscale-gif -c` shows the current
-limit. The Windows version always uses the drive (`%TEMP%`, or `UPSCALE_GIF_TEMP`).
+They go to the drive (`~/.cache`) and are deleted when the run ends. On Linux they can
+instead be kept **in RAM** (`/dev/shm`), which spares the drive but takes memory from
+everything else, so it's off by default: choose it in the settings window (its **Temporary
+files** field appears only when the frames fit in half of the memory available right then)
+or with `-t ram`. The choice is remembered, and a job that doesn't fit at that moment goes
+to the drive anyway. `upscale-gif -c` shows the current limit. Leave it on Disk while
+gaming: a game pushed into swap stutters. The Windows version always uses the drive
+(`%TEMP%`, or `UPSCALE_GIF_TEMP`).
 
 ## Notes
 
