@@ -483,6 +483,129 @@ public static class UpscaleGifPixelGrid {
         return new double[] { Math.Sqrt(re * re + im * im) / tot, Math.Atan2(im, re) / (2 * Math.PI) * P };
     }
 }
+// Restores enlarged pixel art to its original pixels: each grid cell becomes one pixel, of the
+// colour most common in the cell's middle (away from its edges, where the enlargement blurred
+// the colours). Nearly identical colours count as one, so noise doesn't split the vote. Frames
+// stream from one ffmpeg to another on a background thread.
+public class UpscaleGifGridRestore {
+    int w, h, bw, bh; int[] cx, cy;
+    System.Collections.Generic.Dictionary<uint, uint> to = new System.Collections.Generic.Dictionary<uint, uint>();
+    System.Collections.Generic.Dictionary<uint, long> tot = new System.Collections.Generic.Dictionary<uint, long>();
+    System.Diagnostics.Process dec, enc; System.Threading.Thread thread;
+    public volatile bool Done; public string Error;
+
+    public UpscaleGifGridRestore(int w, int h, double P, double Q, double fx, double fy, int bw, int bh) {
+        this.w = w; this.h = h; this.bw = bw; this.bh = bh;
+        cx = new int[w]; cy = new int[h];
+        for (int x = 0; x < w; x++) cx[x] = Cell(x, fx, P, bw);
+        for (int y = 0; y < h; y++) cy[y] = Cell(y, fy, Q, bh);
+    }
+    static int Cell(int i, double f0, double P, int n) {
+        double t = (i + 0.5 - f0) / P; int k = (int)t; double f = t - k;
+        return (t >= 0 && k < n && f > 0.2 && f < 0.8) ? k : -1;
+    }
+    static uint Px(byte[] b, int i) { return ((uint)b[i] << 24) | ((uint)b[i + 1] << 16) | ((uint)b[i + 2] << 8) | b[i + 3]; }
+    static int Dist(uint a, uint b) {
+        int s = 0;
+        for (int sh = 24; sh >= 8; sh -= 8) s += Math.Abs((int)((a >> sh) & 255) - (int)((b >> sh) & 255));
+        return s;
+    }
+
+    // Learns the colours from some frames (RGBA): nearly identical colours (RGB differences
+    // adding up to 18 or less, same transparency) map to the most common of them
+    public void LearnColours(byte[] rgba) {
+        var n = new System.Collections.Generic.Dictionary<uint, long>();
+        int frame = w * h * 4;
+        for (int b = 0; b + frame <= rgba.Length; b += frame)
+            for (int y = 0; y < h; y++) {
+                if (cy[y] < 0) continue;
+                for (int x = 0; x < w; x++) {
+                    if (cx[x] < 0) continue;
+                    uint c = Px(rgba, b + (y * w + x) * 4); long v; n.TryGetValue(c, out v); n[c] = v + 1;
+                }
+            }
+        var list = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<uint, long>>(n);
+        list.Sort(delegate(System.Collections.Generic.KeyValuePair<uint, long> a, System.Collections.Generic.KeyValuePair<uint, long> c) {
+            int r = c.Value.CompareTo(a.Value); return r != 0 ? r : a.Key.CompareTo(c.Key);
+        });
+        var kept = new System.Collections.Generic.List<uint>();
+        foreach (var e in list) {
+            uint best = 0; int bd = 19; bool found = false;
+            foreach (uint k in kept) {
+                if ((k & 255) != (e.Key & 255)) continue;
+                int d = Dist(e.Key, k); if (d < bd) { bd = d; best = k; found = true; }
+            }
+            if (!found) { kept.Add(e.Key); best = e.Key; }
+            to[e.Key] = best; long t; tot.TryGetValue(best, out t); tot[best] = t + e.Value;
+        }
+    }
+
+    public byte[] RestoreFrame(byte[] f) {
+        var outp = new byte[bw * bh * 4];
+        var cnt = new System.Collections.Generic.Dictionary<uint, int>[bw];
+        int row = -1;
+        for (int y = 0; y <= h; y++) {
+            int r = y < h ? cy[y] : -1;
+            if (r != row && row >= 0) {
+                for (int k = 0; k < bw; k++) {
+                    uint best = 0; int bn = 0; long bt = 0;
+                    foreach (var e in cnt[k]) {
+                        long t; tot.TryGetValue(e.Key, out t);
+                        if (e.Value > bn || (e.Value == bn && (t > bt || (t == bt && e.Key < best)))) { bn = e.Value; best = e.Key; bt = t; }
+                    }
+                    int o = (row * bw + k) * 4;
+                    outp[o] = (byte)(best >> 24); outp[o + 1] = (byte)(best >> 16); outp[o + 2] = (byte)(best >> 8); outp[o + 3] = (byte)best;
+                }
+                row = -1;
+            }
+            if (r < 0) continue;
+            if (row < 0) { row = r; for (int k = 0; k < bw; k++) cnt[k] = new System.Collections.Generic.Dictionary<uint, int>(); }
+            for (int x = 0; x < w; x++) {
+                if (cx[x] < 0) continue;
+                uint c = Px(f, (y * w + x) * 4), m; if (to.TryGetValue(c, out m)) c = m;
+                int v; cnt[cx[x]].TryGetValue(c, out v); cnt[cx[x]][c] = v + 1;
+            }
+        }
+        return outp;
+    }
+
+    static System.Diagnostics.Process Spawn(string exe, string args, bool input, bool output) {
+        var psi = new System.Diagnostics.ProcessStartInfo(exe, args);
+        psi.UseShellExecute = false; psi.CreateNoWindow = true;
+        psi.RedirectStandardInput = input; psi.RedirectStandardOutput = output; psi.RedirectStandardError = true;
+        var p = System.Diagnostics.Process.Start(psi);
+        p.ErrorDataReceived += delegate(object s, System.Diagnostics.DataReceivedEventArgs e) { };
+        p.BeginErrorReadLine();
+        return p;
+    }
+    static bool ReadFull(System.IO.Stream s, byte[] b) {
+        int got = 0;
+        while (got < b.Length) { int n = s.Read(b, got, b.Length - got); if (n <= 0) return false; got += n; }
+        return true;
+    }
+    // Learns the colours from the first frames, then restores every frame
+    public void Start(string ffmpeg, string learnArgs, string decodeArgs, string encodeArgs) {
+        thread = new System.Threading.Thread(delegate() {
+            try {
+                var l = Spawn(ffmpeg, learnArgs, false, true);
+                var ms = new System.IO.MemoryStream(); l.StandardOutput.BaseStream.CopyTo(ms); l.WaitForExit();
+                if (l.ExitCode != 0) throw new Exception("ffmpeg could not read the frames");
+                LearnColours(ms.ToArray()); ms = null;
+                dec = Spawn(ffmpeg, decodeArgs, false, true); enc = Spawn(ffmpeg, encodeArgs, true, false);
+                var f = new byte[w * h * 4];
+                var src = dec.StandardOutput.BaseStream; var dst = enc.StandardInput.BaseStream;
+                while (ReadFull(src, f)) { var o = RestoreFrame(f); dst.Write(o, 0, o.Length); }
+                dst.Close(); dec.WaitForExit(); enc.WaitForExit();
+                if (dec.ExitCode != 0 || enc.ExitCode != 0) throw new Exception("ffmpeg failed");
+            } catch (Exception e) { Error = e.Message; }
+            Done = true;
+        });
+        thread.IsBackground = true; thread.Start();
+    }
+    public void Cancel() {
+        foreach (var p in new[] { dec, enc }) { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
+    }
+}
 '@
 
 $LevelDbReader = @'
@@ -868,9 +991,15 @@ function Get-PixelGrid([string]$File, [int]$Stream, [long]$W, [long]$H, [string]
         if (-not ('UpscaleGifPixelGrid' -as [type])) { Add-Type -TypeDefinition $PixelGridCode -Language CSharp }
         $g = [UpscaleGifPixelGrid]::Detect([IO.File]::ReadAllBytes($raw), [int]$cw, [int]$ch)
         if (-not $g) { return $null }
-        # Offsets relative to the whole picture
+        # Offsets relative to the whole picture, rounded like the Linux version's
+        $inv = [Globalization.CultureInfo]::InvariantCulture
+        $r3 = { param($v) [double]::Parse(([double]$v).ToString('F3', $inv), $inv) }
         $fx = ($g[2] + $cx) % $g[0]; $fy = ($g[3] + $cy) % $g[1]
-        return , @($g[0], $g[1], $fx, $fy)
+        # A strip at the picture edge that is nearly a whole cell is one (its edge with the
+        # outside can't be seen)
+        if ($fx -ge 0.8 * $g[0]) { $fx -= $g[0] }
+        if ($fy -ge 0.8 * $g[1]) { $fy -= $g[1] }
+        return , @((& $r3 $g[0]), (& $r3 $g[1]), (& $r3 $fx), (& $r3 $fy))
     } catch { return $null }
     finally { Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue }
 }
@@ -1216,24 +1345,15 @@ function Invoke-Main {
         $outH = Even $height; $outW = Even ([math]::Floor([long]$height * $srcW / $srcH))
     }
     $outW = [math]::Max($outW, 2); $outH = [math]::Max($outH, 2)
-    $pad = ''; $restore = ''; $baseW = $srcW; $baseH = $srcH
+    $pad = ''; $grid = $null; $baseW = $srcW; $baseH = $srcH
     if ($nearestMode -and -not $sarFixed) {
-        # Pixel art that was already enlarged is first brought back to its own pixel grid: each
-        # grid cell becomes one pixel, taken from the cell's middle, away from blurred edges.
-        # Sampling at the grid's exact (often fractional) positions is done on a 2x copy.
+        # Pixel art that was already enlarged is first brought back to its own pixels: each grid
+        # cell becomes one pixel, of the colour most common in the cell's middle
         $grid = Get-PixelGrid $inputFile $vidx $srcW $srcH $workRoot
         if ($grid) {
-            $px = $grid[0]; $py = $grid[1]
-            $baseW = [long][math]::Floor(($srcW - $grid[2]) / $px); $baseH = [long][math]::Floor(($srcH - $grid[3]) / $py)
-            $r2 = { param($v) [long][math]::Floor(2 * $v + 0.5) }
-            $restore = "scale=iw*2:ih*2:flags=neighbor,crop=$(& $r2 ($baseW * $px)):$(& $r2 ($baseH * $py)):$(& $r2 $grid[2]):$(& $r2 $grid[3]),scale=${baseW}:${baseH}:flags=neighbor,"
-            $note = "Note: this looks like pixel art that was enlarged $('{0:0.##}' -f $px)x; restoring its original ${baseW}x${baseH} pixels"
-            if ([math]::Abs($px - [math]::Round($px)) -gt 0.05) {
-                # An uneven enlargement blends neighbouring colours: merge them back into a palette
-                $restore += 'split[pxa][pxb];[pxa]palettegen=max_colors=64:stats_mode=full[pxp];[pxb][pxp]paletteuse=dither=none:alpha_threshold=128,format=rgba,'
-                $note += ' and cleaning up blended colours'
-            }
-            Write-Host "$note."
+            # A last cell 80% inside the picture counts
+            $baseW = [long][math]::Floor(($srcW - $grid[2]) / $grid[0] + 0.2); $baseH = [long][math]::Floor(($srcH - $grid[3]) / $grid[1] + 0.2)
+            Write-Host "Note: this looks like pixel art that was enlarged $('{0:0.##}' -f $grid[0])x; restoring its original ${baseW}x${baseH} pixels."
         }
     }
     if ($nearestMode) {
@@ -1315,6 +1435,36 @@ function Invoke-Main {
             $count = $extracted
         }
 
+        # --- Restore enlarged pixel art ---
+        if ($grid) {
+            Write-Host 'Restoring the original pixels...'
+            $restored = Join-Path $work 'upscaled'
+            $framesIn = Join-Path $frames '%06d.png'
+            $learnN = [math]::Min([math]::Max([math]::Floor(2000000 / ($srcW * $srcH)), 1), 60)
+            $raw = @('-f', 'rawvideo', '-pix_fmt', 'rgba', '-')
+            $job = New-Object UpscaleGifGridRestore ([int]$srcW), ([int]$srcH), $grid[0], $grid[1], $grid[2], $grid[3], ([int]$baseW), ([int]$baseH)
+            $job.Start($script:FFmpeg,
+                ((@('-nostdin', '-v', 'error', '-i', $framesIn, '-frames:v', "$learnN") + $raw | ForEach-Object { Format-Arg $_ }) -join ' '),
+                ((@('-nostdin', '-v', 'error', '-i', $framesIn) + $raw | ForEach-Object { Format-Arg $_ }) -join ' '),
+                ((@('-nostdin', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', "${baseW}x${baseH}", '-i', '-',
+                    '-start_number', '1', (Join-Path $restored '%06d.png')) | ForEach-Object { Format-Arg $_ }) -join ' '))
+            $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
+            $w = New-Watch 3 50 'Restoring pixels, frame {0} of {1}' $count -Dir $restored -Eta 'eta'
+            $next = [DateTime]::MinValue
+            try {
+                while (-not $job.Done) {
+                    if ($script:ProgressWindow) { [Windows.Forms.Application]::DoEvents() }
+                    if ($script:Cancelled) { Fail 'cancelled' }
+                    if ([DateTime]::UtcNow -ge $next) { Update-Watch $w; $next = [DateTime]::UtcNow.AddMilliseconds(500) }
+                    Start-Sleep -Milliseconds 100
+                }
+            } finally { if (-not $job.Done) { $job.Cancel() } }
+            if ($job.Error) { Fail "could not restore the pixel art's original pixels: $($job.Error)" }
+            $done = @(Get-ChildItem -LiteralPath $restored -Filter '*.png').Count
+            if ($done -ne $count) { Fail "restored $done of $count frames" }
+            $upscaled = $restored
+        }
+
         # --- Upscale ---
         if (-not $nearestMode) {
             Write-Host "Upscaling $count frames with $model..."
@@ -1359,10 +1509,11 @@ function Invoke-Main {
         $resize = "scale=${outW}:${outH}:flags=$downsampler,setsar=1"
         $dither = 'sierra2_4a'; $encFrom = 85
         if ($nearestMode) {
-            $resize = "${restore}scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor,setsar=1$pad"
+            $resize = "scale=$($baseW * $scale):$($baseH * $scale):flags=neighbor,setsar=1$pad"
             # Pixel art keeps its colours: no dithering in GIFs, and lossless WebP (lossy WebP
-            # smears colour across the hard edges). Encoding is all the work, so it gets the whole bar.
-            $dither = 'none'; $encFrom = 3; $script:UpClock = [Diagnostics.Stopwatch]::StartNew()
+            # smears colour across the hard edges). Encoding is the rest of the work.
+            $dither = 'none'
+            if ($grid) { $encFrom = 50 } else { $encFrom = 3; $script:UpClock = [Diagnostics.Stopwatch]::StartNew() }
         }
         $progressFile = Join-Path $work 'progress.txt'
         $in = @('-nostdin', '-v', 'error', '-nostats', '-progress', $progressFile, '-stats_period', '0.5', '-y', '-f', 'concat', '-safe', '0', '-i', $list)

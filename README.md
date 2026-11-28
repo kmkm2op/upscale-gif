@@ -230,9 +230,11 @@ colour. It uses no AI and no GPU, so it is fast and also works when no Vulkan GP
 and repaired first. Enlarging by an uneven factor such as 3.5× makes pixels alternate
 between 3 and 4 wide and blurs their edges into extra colours, and plain nearest neighbour
 would keep those flaws. upscale-gif finds the original pixel grid (any size from 2.2 to 16
-screen pixels), takes one pixel from the middle of each grid cell, and for uneven factors
-merges the blended colours back into a palette of up to 64. It then scales that restored
-picture by a whole number, so every pixel comes out the same size. A note shows when this
+screen pixels) and turns each grid cell back into one pixel: the colour most common in the
+cell's middle, away from its blurred edges. Nearly identical shades (a total RGB difference
+of 18 or less, typical of compression noise) count as one colour, so noise can't outvote
+the real colour; the result only uses colours from the original. It then scales that
+restored picture by a whole number, so every pixel comes out the same size. A note shows when this
 happens, e.g. "pixel art that was enlarged 3.49×; restoring its original 88×88 pixels".
 Photos, video and art at its original size are left as they are.
 
