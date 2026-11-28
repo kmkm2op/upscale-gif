@@ -1567,7 +1567,7 @@ function Invoke-Main {
                 if ($r.Code -eq 0 -and (Test-Path -LiteralPath $raw)) { $restorer.Learn([IO.File]::ReadAllBytes($raw)) }
             } finally { Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue }
             $enlarged = '{0:0.##}' -f $grid[0]
-            $layer = $null
+            $layer = $null; $layerA = 0; $layerB = 1
             if ($restorer.Layer) {
                 # Rounded like the Linux version's
                 $inv = [Globalization.CultureInfo]::InvariantCulture
@@ -1584,6 +1584,14 @@ function Invoke-Main {
             if ($layer) {
                 $ow = [long][math]::Floor(($srcW - $layer[2]) / $layer[0] + 0.2); $oh = [long][math]::Floor(($srcH - $layer[3]) / $layer[1] + 0.2)
                 $restorer.SetLayer($layer[0], $layer[1], $layer[2], $layer[3], [int]$ow, [int]$oh)
+                # Both layers get whole pixels when the output scale is a multiple of B, where the
+                # second grid is A/B of the main one (B up to 8, within 1%): e.g. 3.01/3.49 = 6/7,
+                # so at 14x the main pixels are 14 px and the second layer's 12 px
+                $ratio = ($layer[0] + $layer[1]) / ($grid[0] + $grid[1])
+                for ($b = 1; $b -le 8; $b++) {
+                    $a = [math]::Floor($ratio * $b + 0.5)
+                    if ($a -ge 1 -and [math]::Abs($a / $b - $ratio) -le 0.01 * $ratio) { $layerA = $a; $layerB = $b; break }
+                }
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x, with a part such as text at $('{0:0.##}' -f $layer[0])x; restoring the original pixels of both."
             } else {
                 Write-Host "Note: this looks like pixel art that was enlarged ${enlarged}x; restoring its original ${baseW}x${baseH} pixels."
@@ -1595,6 +1603,8 @@ function Invoke-Main {
         # WebM need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
         $scale = if ($width) { [math]::Floor($outW / $baseW) } else { [math]::Floor($outH / $baseH) }
         $scale = [long][math]::Max($scale, 1)
+        $step = if ($layer -and $layerA) { $layerB } else { 1 }
+        $scale = [long][math]::Max([math]::Floor($scale / $step) * $step, $step)
         $req = "${outW}x${outH}"
         $outW = $baseW * $scale; $outH = $baseH * $scale
         if ($format -match '^(mp4|webm)$' -and ($outW % 2 -or $outH % 2)) {
@@ -1602,7 +1612,8 @@ function Invoke-Main {
             $outW = Even $outW; $outH = Even $outH
         }
         if ($req -ne "${outW}x${outH}") {
-            Write-Host "Note: nearest neighbour uses whole multiples of ${baseW}x${baseH}: ${outW}x${outH} (${scale}x) instead of $req."
+            $why = if ($step -gt 1) { " (here of ${step}x, so that both layers have whole pixels)" } else { '' }
+            Write-Host "Note: nearest neighbour uses whole multiples of ${baseW}x${baseH}${why}: ${outW}x${outH} (${scale}x) instead of $req."
         }
     }
     if ($need -gt $free) { Fail "not enough space in ${workRoot}: $spaceNote" }
@@ -1705,8 +1716,12 @@ function Invoke-Main {
                 # Both layers at the output size, each with its own whole pixels: the second
                 # layer's pixels are its grid size times the output's pixels per source pixel
                 $rnd = { param($v) [long][math]::Round($v, [MidpointRounding]::AwayFromZero) }
-                $lw = & $rnd ($ow * $layer[0] * $scale / $grid[0]); $lh = & $rnd ($oh * $layer[1] * $scale / $grid[1])
-                $lx = & $rnd (($layer[2] - $grid[2]) * $scale / $grid[0]); $ly = & $rnd (($layer[3] - $grid[3]) * $scale / $grid[1])
+                # With a whole pixel size (scale x A/B), the layer is placed by its middle, where
+                # the rounding of its size matters least
+                if ($layerA) { $t = $scale * $layerA / $layerB; $lw = $ow * $t; $lh = $oh * $t }
+                else { $lw = & $rnd ($ow * $layer[0] * $scale / $grid[0]); $lh = & $rnd ($oh * $layer[1] * $scale / $grid[1]) }
+                $lx = & $rnd (($layer[2] + $ow * $layer[0] / 2 - $grid[2]) * $scale / $grid[0] - $lw / 2)
+                $ly = & $rnd (($layer[3] + $oh * $layer[1] / 2 - $grid[3]) * $scale / $grid[1] - $lh / 2)
                 $combined = Join-Path $work 'combined'
                 [void](New-Item -ItemType Directory -Path $combined)
                 $a = @('-nostdin', '-v', 'error', '-framerate', '25', '-i', (Join-Path $restored '%06d.png'), '-framerate', '25', '-i', (Join-Path $layerDir '%06d.png'),

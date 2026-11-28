@@ -1018,7 +1018,7 @@ else
 fi
 (( out_w >= 2 )) || out_w=2
 (( out_h >= 2 )) || out_h=2
-pad="" grid_args=() layer_args=() base_w=$src_w base_h=$src_h
+pad="" grid_args=() layer_args=() layer_a=0 layer_b=1 base_w=$src_w base_h=$src_h
 if (( nearest && ! sar_fixed )) && have basenc; then
     # Pixel art that was already enlarged is first brought back to its own pixels: each grid
     # cell becomes one pixel, of the colour most common in the cell's middle (restore_frames)
@@ -1046,6 +1046,14 @@ if (( nearest && ! sar_fixed )) && have basenc; then
             read -r ow oh < <(awk -v w="$src_w" -v h="$src_h" -v p="$g2x" -v q="$g2y" -v fx="$g2fx" -v fy="$g2fy" \
                 'BEGIN { print int((w - fx) / p + 0.2), int((h - fy) / q + 0.2) }')
             layer_args=("$g2x" "$g2y" "$g2fx" "$g2fy" "$ow" "$oh")
+            # Both layers get whole pixels when the output scale is a multiple of B, where the
+            # second grid is A/B of the main one (B up to 8, within 1%): e.g. 3.01/3.49 = 6/7,
+            # so at 14x the main pixels are 14 px and the second layer's 12 px
+            read -r layer_a layer_b < <(awk -v P="$gx" -v Q="$gy" -v p="$g2x" -v q="$g2y" 'BEGIN {
+                r = (p + q) / (P + Q)
+                for (b = 1; b <= 8; b++) { a = int(r * b + 0.5); e = a / b - r; if (e < 0) e = -e
+                    if (a >= 1 && e <= 0.01 * r) { print a, b; exit } }
+                print 0, 1 }')
             echo "Note: this looks like pixel art that was enlarged ${enlarged}×, with a part such as text at $(awk -v v="$g2x" 'BEGIN { s = sprintf("%.2f", v); sub(/\.?0+$/, "", s); print s }')×; restoring the original pixels of both."
         else
             echo "Note: this looks like pixel art that was enlarged ${enlarged}×; restoring its original ${base_w}×${base_h} pixels."
@@ -1057,6 +1065,8 @@ if (( nearest )); then
     # need even sizes: an odd one gets a 1-pixel transparent (MP4: black) edge.
     if [[ -n $width ]]; then scale=$(( out_w / base_w )); else scale=$(( out_h / base_h )); fi
     (( scale >= 1 )) || scale=1
+    step=1; (( ! ${#layer_args[@]} || layer_a == 0 )) || step=$layer_b
+    scale=$(( scale / step * step )); (( scale >= step )) || scale=$step
     req="${out_w}×${out_h}"
     out_w=$((base_w * scale)) out_h=$((base_h * scale))
     if [[ $format =~ ^(mp4|webm)$ ]] && (( out_w % 2 || out_h % 2 )); then
@@ -1064,7 +1074,7 @@ if (( nearest )); then
         out_w=$(even $out_w) out_h=$(even $out_h)
     fi
     [[ $req == "${out_w}×${out_h}" ]] \
-        || echo "Note: nearest neighbour uses whole multiples of ${base_w}×${base_h}: ${out_w}×${out_h} (${scale}×) instead of $req."
+        || echo "Note: nearest neighbour uses whole multiples of ${base_w}×${base_h}$( (( step == 1 )) || echo " (here of ${step}×, so that both layers have whole pixels)"): ${out_w}×${out_h} (${scale}×) instead of $req."
 fi
 if [[ $temp == ram && $temp_where != RAM ]]; then
     die "the temporary frames (~$(human "$need")) don't fit in RAM: up to $(human "$(ram_room)") (half the available memory) can be used. Use -t disk."
@@ -1227,10 +1237,14 @@ if (( ${#grid_args[@]} )); then
     if (( ${#layer_args[@]} )); then
         # Both layers at the output size, each with its own whole pixels: the second layer's
         # pixels are its grid size times the output's pixels per source pixel
+        # With a whole pixel size t (scale x A/B), the layer is placed by its middle, where
+        # the rounding of its size matters least
         read -r lw lh lx ly < <(awk -v s="$scale" -v P="${grid_args[2]}" -v Q="${grid_args[3]}" -v fx="${grid_args[4]}" -v fy="${grid_args[5]}" \
             -v p="${layer_args[0]}" -v q="${layer_args[1]}" -v gx="${layer_args[2]}" -v gy="${layer_args[3]}" -v ow="${layer_args[4]}" -v oh="${layer_args[5]}" \
+            -v a="$layer_a" -v b="$layer_b" \
             'function r(v) { return v < 0 ? -int(-v + 0.5) : int(v + 0.5) }
-             BEGIN { print r(ow * p * s / P), r(oh * q * s / Q), r((gx - fx) * s / P), r((gy - fy) * s / Q) }')
+             BEGIN { if (a) { t = s * a / b; w = ow * t; h = oh * t } else { w = r(ow * p * s / P); h = r(oh * q * s / Q) }
+                 print w, h, r((gx + ow * p / 2 - fx) * s / P - w / 2), r((gy + oh * q / 2 - fy) * s / Q - h / 2) }')
         mkdir "$work/combined"
         watch 42 50 "Adding the second layer, frame %d of %d" count_combined - - -- \
             ffmpeg -nostdin -v error -framerate 25 -i "$work/upscaled/%06d.png" -framerate 25 -i "$work/layer/%06d.png" -filter_complex \
