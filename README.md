@@ -239,7 +239,9 @@ restored picture by a whole number, so every pixel comes out the same size.
 Some animations add a part on a grid of its own, such as a speech bubble whose text was
 enlarged 3× while the sprites were enlarged 3.5×. upscale-gif finds the cells the main
 grid explains badly, measures the grid their edges line up on, and restores that part on
-its own grid as a second layer, drawn over the first at the output size. Each layer keeps
+its own grid as a second layer, drawn over the first at the output size. The flat area
+around that part (such as the inside of a speech bubble) joins it, so the bubble's frame is
+restored on the same grid as its text. Each layer keeps
 whole, equal pixels; the second layer's pixels are a little smaller or larger than the
 first's. A note shows when this happens, e.g. "pixel art that was enlarged 3.49×, with a
 part such as text at 3.01×", or otherwise "restoring its original 88×88 pixels".

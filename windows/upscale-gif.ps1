@@ -693,19 +693,38 @@ public class UpscaleGifGridRestore {
             Errs(r, c, out em, out eo); if (eo < 0.5 * em) S.Add(key);
         }
         // ...in clusters (text), not alone (blurred sprite edges)
-        var U = new System.Collections.Generic.HashSet<int>(); var seen = new System.Collections.Generic.HashSet<int>();
+        var U = new System.Collections.Generic.HashSet<int>(); var seen = new System.Collections.Generic.Dictionary<int, int>();
         var q = new System.Collections.Generic.List<int>();
-        foreach (int key in S) if (Near(S, key / 65536, key % 65536) >= 2) { U.Add(key); seen.Add(key); q.Add(key); }
-        // Grow into the cells around them where the second grid is better
+        foreach (int key in S) if (Near(S, key / 65536, key % 65536) >= 2) { U.Add(key); seen[key] = 0; q.Add(key); }
+        // Grow into the cells around them where the second grid is better, and across up to 3
+        // cells where both fit equally (flat areas), so that what surrounds the text, such as
+        // the frame of a speech bubble, joins it on the same grid (across flat cells, only a
+        // clearly better fit counts as part of it again)
         for (int k = 0; k < q.Count; k++) {
-            int r0 = q[k] / 65536, c0 = q[k] % 65536;
+            int r0 = q[k] / 65536, c0 = q[k] % 65536, d0 = seen[q[k]];
             for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
-                int r = r0 + j, c = c0 + i;
-                if ((i == 0 && j == 0) || r < 0 || r >= bh || c < 0 || c >= bw || seen.Contains(Key(r, c))) continue;
-                seen.Add(Key(r, c)); Errs(r, c, out em, out eo);
-                if (eo < em) { U.Add(Key(r, c)); q.Add(Key(r, c)); }
+                int r = r0 + j, c = c0 + i, d, sd;
+                if ((i == 0 && j == 0) || r < 0 || r >= bh || c < 0 || c >= bw) continue;
+                Errs(r, c, out em, out eo);
+                if (eo < em && (d0 == 0 || eo < 0.5 * em)) d = 0; else if (eo <= em) d = d0 + 1; else continue;
+                if (d > 3 || (seen.TryGetValue(Key(r, c), out sd) && sd <= d)) continue;
+                U.Add(Key(r, c)); seen[Key(r, c)] = d; q.Add(Key(r, c));
             }
         }
+        // Those flat cells must not touch content that fits the main grid better (a sprite
+        // beside the bubble): its second-grid pixels would overlap that content
+        var drop = new System.Collections.Generic.List<int>();
+        foreach (int key in U) {
+            if (seen[key] == 0) continue;
+            int r0 = key / 65536, c0 = key % 65536; bool touch = false;
+            for (int i = -1; i <= 1 && !touch; i++) for (int j = -1; j <= 1; j++) {
+                int r = r0 + j, c = c0 + i;
+                if ((i == 0 && j == 0) || r < 0 || r >= bh || c < 0 || c >= bw || U.Contains(Key(r, c))) continue;
+                Errs(r, c, out em, out eo); if (eo > em) { touch = true; break; }
+            }
+            if (touch) drop.Add(key);
+        }
+        foreach (int key in drop) U.Remove(key);
         // Fill gaps: cells with region cells within 3 on both sides, left and right or above
         // and below, unless the second grid fits them more than twice as badly
         for (int it = 0; it < 2; it++) {

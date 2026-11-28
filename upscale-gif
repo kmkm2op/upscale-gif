@@ -557,12 +557,27 @@ GRID_AWK='
         for (key in bad) { split(key, a, SUBSEP); if (!near(bad, a[1], a[2])) continue
             errs(a[1], a[2]); if (EO < 0.5 * EM) S[key] = 1 }
         # ...in clusters (text), not alone (blurred sprite edges)
-        for (key in S) { split(key, a, SUBSEP); if (near(S, a[1], a[2]) >= 2) { U[key] = 1; seen[key] = 1; q[++nq] = key; nu++ } }
-        # Grow into the cells around them where the second grid is better
+        for (key in S) { split(key, a, SUBSEP); if (near(S, a[1], a[2]) >= 2) { U[key] = 1; seen[key] = 0; q[++nq] = key; nu++ } }
+        # Grow into the cells around them where the second grid is better, and across up to
+        # 3 cells where both fit equally (flat areas), so that what surrounds the text, such
+        # as the frame of a speech bubble, joins it on the same grid
         for (k = 1; k <= nq; k++) { split(q[k], a, SUBSEP)
             for (i = -1; i <= 1; i++) for (j = -1; j <= 1; j++) { r = a[1] + j; c = a[2] + i
-                if ((!i && !j) || r < 0 || r >= bh || c < 0 || c >= bw || ((r, c) in seen)) continue
-                seen[r, c] = 1; errs(r, c); if (EO < EM) { U[r, c] = 1; q[++nq] = r SUBSEP c; nu++ } } }
+                if ((!i && !j) || r < 0 || r >= bh || c < 0 || c >= bw) continue
+                errs(r, c)
+                # (across flat cells, only a clearly better fit counts as part of it again)
+                if (EO < EM && (!seen[a[1], a[2]] || EO < 0.5 * EM)) d = 0; else if (EO <= EM) d = seen[a[1], a[2]] + 1; else continue
+                if (d > 3 || (((r, c) in seen) && seen[r, c] <= d)) continue
+                if (!((r, c) in U)) { U[r, c] = 1; nu++ }
+                seen[r, c] = d; q[++nq] = r SUBSEP c } }
+        # Those flat cells must not touch content that fits the main grid better (a sprite
+        # beside the bubble): its second-grid pixels would overlap that content
+        split("", add)
+        for (key in U) { split(key, a, SUBSEP); if (!seen[key]) continue
+            for (i = -1; i <= 1 && !(key in add); i++) for (j = -1; j <= 1; j++) { r = a[1] + j; c = a[2] + i
+                if ((!i && !j) || r < 0 || r >= bh || c < 0 || c >= bw || ((r, c) in U)) continue
+                errs(r, c); if (EO > EM) { add[key] = 1; break } } }
+        for (key in add) { delete U[key]; nu-- }
         # Fill gaps (where the main grid happens to fit some text as well): cells with region
         # cells within 3 on both sides, left and right or above and below, unless the second
         # grid fits them more than twice as badly
